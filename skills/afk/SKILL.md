@@ -77,7 +77,7 @@ Then run forward to the park point.
 While AFK is active, auto-answer every gate and **append each answer to the decision-log**:
 
 - **Direction gate** → `y` (recommended direction). If `deep-dive` would be the default, take the recommended candidate instead, log `deep-dive skipped → took recommended <X>`. Never enter brainstorming/grill (they block on the user).
-- **Plan-review gate** → `y`.
+- **Plan-review gate** → `y`. When step 7.5 printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`. When it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line — the gate looks exactly as it does today.
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
 - **Any other fork with no clear recommendation** → most conservative / most reversible option, logged.

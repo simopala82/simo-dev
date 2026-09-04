@@ -1,4 +1,4 @@
-## 1.0.0 (2026-09-04)
+## 1.0.1 (2026-09-04)
 
 ### Other Changes
-- Initial versioned release.
+- chore(afk): log discarded plan-critique findings in decision-log
