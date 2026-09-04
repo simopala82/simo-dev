@@ -1,0 +1,257 @@
+---
+name: mr-followup
+description: Use after a push to check pipeline status and code review comments on the current GitLab MR or GitHub PR. Auto-fixes medium+ findings, up to `CAP` rounds (5; pass `cap=2` when the diff is prose only — no code and no shell/python inside the prose). Fifth step of the canonical task flow.
+---
+
+# Check MR / PR Review
+
+Fifth and final step of the canonical task flow:
+`simo-dev:task-intake → simo-dev:plan-execute → simo-dev:review-loop → simo-dev:commit → simo-dev:mr-followup`
+
+Checks the MR/PR for pipeline status and review comments, auto-fixes medium+ findings, commits them (no gate — unconditional) and auto-pushes. Works on GitLab (including self-hosted) and `github.com`. A local `simo-dev:code-reviewer` subagent always reviews the branch diff (step 6).
+
+Iteration cap: `CAP` — 5, or a lower value passed by the invoker (step 1.5). Every round but the last detects + fixes + commits + auto-pushes; the last one surfaces what is left without committing. At `CAP` = 2 that means round 1 fixes and round 2 surfaces.
+
+## Severity model
+
+Per `~/.claude/local-marketplace/simo-dev/docs/canonical-flow.md` "Code review severity" — `low` informational, `medium`/`high`/`critical` auto-fixed (see step 7).
+
+## Steps
+
+### 1. Detect forge + target
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+DETECT_OUT=$(python3 "$R/skills/mr-followup/lib/detect_remote.py" "<worktree-abs>") || exit 1
+# DETECT_OUT is `FORGE=gitlab|github  SLUG=owner/repo (or group/.../repo)  API_HOST=resolved hostname`
+BRANCH=$(git -C "<worktree-abs>" branch --show-current)
+printf '%s  BRANCH=%s\n' "$DETECT_OUT" "$BRANCH"
+[ -n "$BRANCH" ] || { echo "empty BRANCH (detached HEAD, or the git call above failed) — refusing to continue"; exit 1; }
+```
+
+Shell state does not survive between separate Bash calls (CLAUDE.md "Worktree cwd gotcha"). `<worktree-abs>` is the absolute repo/worktree path — `detect_remote.py` and the `git branch` above now require it explicitly rather than relying on an ambient cwd, which does not necessarily match. `glab`/`gh` resolve their project from the cwd too, and **`-R` is not a substitute** — a bare `owner/repo` pins the path but not the host, so it resolves against `glab config get host` (measured 2026-08-15: `glab mr list -R <user>/<repo>` gives 404 from `/tmp`, the real list from the worktree, host `gitlab.com` vs origin `<your-gitlab-host>`); on `glab mr create` it does not even reach the source project (`simo-dev:commit` step 9). So the `glab`/`gh` calls below are scoped with `cd "<worktree-abs>" &&` instead, while the `git` ones take `-C "<worktree-abs>"` — `pipeline_poll_gitlab.py` (`lib/pipeline-scripts.md`) takes `<worktree-abs>` as an argument and scopes its own `glab` call internally instead — with the two side effects `simo-dev:commit` step 9 lists for the `cd` form: the Bash cwd stays there for later calls, and a `cd` inside a compound command can raise a permission prompt on the headless paths that drive this skill (`simo-dev:afk`, an unattended headless caller). Assume nothing about the rest — observed still unscoped: the `gh api .../comments/{id}/replies` of step 7's thread-reply policy, and `pipeline_poll_github.py`, launched by path. (`check_mr_state.py` was one of these; it now takes a required `--cwd` and applies it to both forges.) Scope any forge call you add. `<branch>`, `<forge>`, `<slug>`, `<api-host>` are not derivable from the block alone — the `DETECT_OUT=$(...)` assignment and the `git branch` assignment print nothing themselves, so read them off the `FORGE=...  SLUG=...  API_HOST=...  BRANCH=...` line the block's own `printf` prints. That line always prints, even with `BRANCH=` empty — the guard right after it is what stops the block from returning control on an empty branch, so no later step ever receives an empty literal. `<base>` and `<mr-iid>`/`<pr-num>` come from the GitLab/GitHub block right below. Substitute all of them — and `<worktree-abs>` itself — as literals in every later block, never as shell variables (`$BRANCH`/`$BASE`/`$FORGE`/`$SLUG`/`$API_HOST`, or an empty `git -C ""`).
+
+**GitLab (`FORGE=gitlab`):**
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+cd "<worktree-abs>" && glab mr view "<branch>" -F json | python3 "$R/skills/mr-followup/lib/format_mr_view.py"
+```
+
+Extract the `<base>` / `<mr-iid>` literals from `BASE` / `IID`. `SOURCE != <branch>` → glab resolved a different MR, ask. Draft → proceed, flag it. `STATE` is informational; the check below is the authority.
+
+Non-zero exit → no JSON on stdout, so `<base>` / `<mr-iid>` stay unset while steps 5-6 need them. It does not prove there is no MR: `format_mr_view.py` exits non-zero on empty or invalid stdin, and an expired token, a network error or a wrong cwd all land on the same non-zero exit — stderr is deliberately unredirected because glab's own message is what tells them apart. Run the state-check block below — **whole, never a line of it on its own**: it binds `$G` before it uses it, so a lone capture line runs `python3 ""`. `<mr-iid>` is still unbound here — leave it unsubstituted, do not guess one. Then branch on what it printed: `no MR found` → print "No MR for branch `<branch>` on `<slug>`. To open one: `glab mr create`, then re-invoke this skill." and exit 0; any `NOT verified` warning → stop, nothing was established; a state line, or silence (rc `0`, the MR is open) → the first call failed transiently and this one reached the MR, so re-run the block above once to fill the fields, then stop if it fails again.
+
+State-check (the block only warns and never exits — intake step, not a push; the fallback path above still stops on a `NOT verified`):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+G="$R/lib/check_mr_state.py"
+if [ ! -f "$G" ]; then
+  echo "WARN: MR state NOT verified — guard unreachable at $G. State unknown."
+else
+  MR_STATE=$(python3 "$G" "<branch>" --forge glab --cwd "<worktree-abs>")
+  MR_STATE_RC=$?
+  if [ -z "$MR_STATE" ]; then
+    echo "WARN: MR state NOT verified for '<branch>' — rc $MR_STATE_RC, no output: the helper never answered."
+  else
+    case $MR_STATE_RC in
+      0) ;;
+      1) echo "MR !<mr-iid> for branch '<branch>' is in state '$MR_STATE' (expected 'opened')." ;;
+      3) echo "WARN: no MR found for branch '<branch>' — nothing to follow up on yet." ;;
+      *) echo "WARN: MR state NOT verified for '<branch>' — rc $MR_STATE_RC, reported '$MR_STATE'." ;;
+    esac
+  fi
+fi
+```
+
+The block itself never exits — on the normal path intake warns and continues, and the guard that stops is step 7 item 6. **`[ -z "$MR_STATE" ]` is the correctness test**: an rc does not tell you the helper answered. A crashing script exits `1` with empty stdout, which the rc-`1` arm would render as `is in state ''`; a truncation left with valid syntax exits `0` the same way, which the rc-`0` arm would render as silence — read as "MR is open" (both measured 2026-08-21). Only past that test does the rc pick the wording, and unknown codes fall to "NOT verified" rather than to a fabricated state. **`[ -f "$G" ]` is the diagnosability test**, not a second correctness one — rc `2` already routes a missing script correctly, but conflates it with a bad token or a dead network, and the operator action differs: restart the session, versus fix the token. Restart and not `unset CLAUDE_PLUGIN_ROOT` — this block is a rendered body, so the placeholder is already a literal path by the time any shell runs and unsetting it changes nothing here. How a live session's script path vanishes under it: worth logging in a personal notes file if you keep one — section "Releasing a plugin kills the hooks of every already-open session" in the author's own (by title — sections get renumbered).
+
+**GitHub (`FORGE=github`):**
+
+```bash
+cd "<worktree-abs>" && gh pr view --json number,state,isDraft,baseRefName,headRefName,url
+```
+
+Extract `PR_NUM=.number`, `BASE=.baseRefName`. `state != OPEN` → warn. Draft → proceed, flag it. No PR (non-zero exit) → print "No PR for branch `<branch>` on `<slug>`. To open one: `gh pr create`, then re-invoke this skill." and exit 0. Multiple PRs → `cd "<worktree-abs>" && gh pr list --head "<branch>" --state open --json number`; still ambiguous → ask.
+
+**Transition ticket to CodeReview** (idempotent, forward-only — catches MRs opened manually after the push):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+KEY=$(python3 "$R/lib/derive_ticket_key.py" "<branch>" --cwd "<worktree-abs>")
+if [ -n "$KEY" ]; then
+  PREFIX="${KEY%%-*}"
+  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$KEY" "CodeReview" --leaf-only --sync-parent || echo "WARNING: transition_cmd failed for $KEY -> CodeReview (continuing)"
+fi
+```
+
+`DEV_FLOW_NO_TRACKER=1` / `.claude/no-tracker` marker → empty `KEY` → skips. No `transition_cmd` configured for the prefix (e.g. a read-only tracker) → also skips, no special-case needed. A `transition_cmd` failure — any non-zero exit, including a `--leaf-only` refusal on an umbrella ticket or a `--sync-parent` exit 7 (all the parent's sub-tasks at/past Done — verify and close it by hand, see `simo-dev:task-intake` step 2.5) — only prints the warning above and the flow continues.
+
+### 1.5. Round cap
+
+`CAP` = **5** unless the invoker passed a lower value (`cap=<n>`). 5 is the ceiling and **2 is the floor** — a passed value may only lower it
+within that range. Below 2 this skill would run no fix round at all, so the value stops meaning anything (the other one would still run a fix round), so a passed 1 or 0 is
+clamped up to 2 — never rejected into the default of 5, which would silently cost more than asked.
+
+Pass `cap=2` when the diff is prose and nothing else: no code, and no executable content inside the
+prose either. Do not infer it from which file changed: the bodies this flow edits most are dense
+with runnable blocks (`commit` 15 `bash` fences, `mr-followup` 11, `task-intake` 11 — measured
+2026-08-22, indented fences included). So judge by whether a changed line falls inside a fenced
+`bash`/`sh`/`python` block, in any file. The judgment belongs to the invoker, which has the diff in
+context; deriving it from file extensions was tried and abandoned (see the plan behind this rule).
+
+A `high` or `critical` finding that survives the validity filter raises `CAP` back to 5 for the rest
+of the rounds, so a cap passed in error cannot weaken the review. Evaluate that at step 7,
+before the cap-reached branch. Announce the value in one line so the report is auditable.
+
+### 2. Wait for pipeline (background)
+
+Register the task, then run the poll with `run_in_background: true` — tell the user it's running; do NOT sleep or poll manually:
+
+```bash
+tag="${CLAUDE_CODE_SESSION_ID%%-*}"
+[ -n "$tag" ] && mkdir -p ~/.config/claude-notify \
+  && printf '%s\n' "$tag: mr-review pipeline poll" >> ~/.config/claude-notify/bg-tasks
+```
+
+> Nothing found acts on the row; `~/.claude/scripts/cleanup.py` only reports the file as stale. Why the tag and `printf`, never `echo`: logged in the author's own notes (worth keeping a similar log), section "`bg-tasks`: registering into a queue nothing reads".
+
+GitLab: `lib/pipeline_poll_gitlab.py "<worktree-abs>" "<branch>"`, which scopes its own `glab pipeline list` call to `<worktree-abs>` internally, transitional states (`running|pending|created|preparing|waiting_for_resource|scheduled|canceling`) = still going. Bounded on both ends — `POLL_NOPIPE_MAX_WAIT` (300s) while nothing matches the branch, `POLL_MAX_WAIT` (1800s) once a pipeline is visible. GitHub: `lib/pipeline_poll_github.py "<pr-num>"`, bounded on both ends with the same knobs — `POLL_NOPIPE_MAX_WAIT` (300s) while no check has been reported, `POLL_MAX_WAIT` (1800s) once one has, `POLL_INTERVAL` (30s) between polls.
+
+> Launch commands + env var/exit-code contract: `lib/pipeline-scripts.md` — load when launching the poll.
+
+If any check/job failed, report it before moving on. On **both forges** the poll's **exit code is the verdict** and the codes are identical, so read it and not just the last line: `0` a pipeline concluded, or every check concluded — report the status word or the failed count, a `failed` pipeline is rc `0` too; `3` no pipeline exists for this branch, or the PR has no checks — say so in one line and continue, it is not a pipeline result and not a failure; `4` a ceiling came due with no conclusion — on GitLab a pipeline still transitional, one that vanished from the list, or a line whose status did not parse; on GitHub checks still pending, or checks seen once and then gone, which `checks=` (nonzero vs `0`) on that line tells apart, not `checks_seen=` (always `1` there by construction); the poll's last lines say which — and `5` the read that hit the ceiling failed, so the state is unverified (the forge may well have answered earlier); report both and **never** treat either as green; `1` the poll refused to start — read its last line for which precondition failed, on GitLab an empty `<branch>` literal or a `<worktree-abs>` that does not resolve to a real directory, on GitHub a missing `<pr-num>` argument; fix that one and relaunch. Codes and rationale: `lib/pipeline-scripts.md`.
+
+> Steps 3-4 retired with the CI AI-review experiment. Numbering preserved — grep `step 8` across the plugin before renumbering anything.
+
+### 5. Fetch review comments
+
+Both helpers print `## <author> — <path> line <N>\n<body>\n`, or `No open review comments found.` when the forge really has zero open comments. Capture as `REMOTE_COMMENTS`.
+
+Capture the rc **and print it** in the same call — a bare run whose output you read and whose status you drop is what let a failed fetch pass as zero comments. The `printf` is not cosmetic: shell state dies between calls, and a block ending in an assignment exits 0, so without it the block hands back empty output at rc 0 (measured) and the branch below is unreachable:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+REMOTE_COMMENTS=$(python3 "$R/skills/mr-followup/lib/fetch_discussions.py" "<slug>" "<mr-iid>" "<api-host>")   # GitLab
+FETCH_RC=$?; printf 'rc=%s\n%s\n' "$FETCH_RC" "$REMOTE_COMMENTS"
+```
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+REMOTE_COMMENTS=$(python3 "$R/skills/mr-followup/lib/fetch_pr_threads.py" "<slug>" "<pr-num>")    # GitHub
+FETCH_RC=$?; printf 'rc=%s\n%s\n' "$FETCH_RC" "$REMOTE_COMMENTS"
+```
+
+Read `rc=` from the first output line; stderr is unredirected, so the helper's own message is what tells the causes apart.
+
+**Any non-zero `FETCH_RC` is a STOP for the whole followup — never read it as zero comments.** Branch on it before using `REMOTE_COMMENTS`:
+
+- `FETCH_RC=0` → the capture is the comments, or the zero-comments sentinel. Continue to step 6.
+- `FETCH_RC=2` → fail-closed, same meaning as `MR_STATE_RC=2` in step 7: the fetch did not complete (bad/missing token, network down, `gh` missing, forge error), and stdout carries a `REVIEW COMMENTS UNAVAILABLE` line. On GitHub that marker is *appended* — comments already printed by the threads query sit above it — so match the marker anywhere in the capture, not just on the first line. **STOP**, do not continue to step 6. Report: "Could not fetch review comments for '<branch>' — the forge was not reached, so 'no comments' is unknown, not confirmed. Fix the token/network and re-invoke; the fetch is idempotent."
+- any other non-zero → same STOP, and stdout may be **empty**: a bad argument, or an uncaught error the fetcher's net did not convert (both exit 1). Report the rc and the helper's stderr verbatim rather than guessing a cause.
+
+GitLab token: `GITLAB_TOKEN` or macOS keychain (`gitlab-api-token`); one-time setup with ACL recipe in `lib/keychain-setup.md`. GitHub: `gh` handles auth.
+
+### 6. Local code review
+
+Always runs — dispatch `simo-dev:code-reviewer` against the diff:
+
+```bash
+git -C "<worktree-abs>" fetch origin "<base>"
+CHANGED=$(git -C "<worktree-abs>" diff --name-only "origin/<base>"...HEAD)
+DIFF=$(git -C "<worktree-abs>" diff "origin/<base>"...HEAD)
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+CODE_REVIEW_MODEL=$(python3 "$R/lib/model_strategy.py" get code_review)
+```
+
+Agent prompt: review the diff, one finding per line as `[severity] file:line — message` (low|medium|high|critical), real problems only. Output → `LOCAL_REVIEW`. Dispatch also passes `model: $CODE_REVIEW_MODEL` whenever that variable is non-empty (omitted when empty, same inherit-the-caller's-tier behavior as today). Diff > ~50k chars → `git -C "<worktree-abs>" diff --stat "origin/<base>"...HEAD` + per-file slices for files under 1k lines; skip generated files. This dispatch deliberately does **not** carry the `REPO:` marker line that `simo-dev:code-review-protocol` requires: it reviews `origin/<base>...HEAD` only, while the record that marker writes certifies the working tree and untracked files too — uncommitted work no reviewer here saw. Do not "fix" the missing marker.
+
+**Carry the prior rounds — from round 2, and on round 1 whenever `simo-dev:review-loop` already ran on this diff** (its step 8 printed the fix log, the rejected findings with rationale and the unresolved list — skip the round-1 carry when that output is no longer in context; a round 1 that ignores them re-derives up to five settled iterations). The reviewer is stateless; open the prompt with "The following were already evaluated, each with the reason given. Do NOT re-flag them unless you can refute the rationale with new evidence.", then three **cumulative** lists — every round's entries, carried forward on every later round, never just the last one's: **dropped by the validity filter** (step 7 item 2's `rejected:` lines, or `review-loop` step 5's on the round-1 path, with their reasons); **confirmed correct** — code an earlier round examined and the caller judged right, with the reason, from the caller's own reading since no reviewer output carries it; **verified by the caller** — what was asserted and the exact command, instructing the reviewer to attack those checks (does the command discriminate? would it fail if the behavior broke?), never to repeat them. Anything left **unresolved** goes in too — step 7 item 2's **ambiguous** drops, findings without `file:line`, and on the round-1 path `review-loop`'s own unresolved entries — under their own label, "still open — re-raise if the code is still wrong", and **outside** the clause, same as `review-loop` step 2.
+
+### 7. Iteration loop (cap = CAP, step 1.5)
+
+Build the round-N body: concatenate `REMOTE_COMMENTS` + `LOCAL_REVIEW` (header-separated) when both have content; use the non-empty one otherwise; both empty (a local review legitimately returns no findings) → "Nothing to review", stop.
+
+Parse findings: regex `^\[(low|medium|high|critical)\]\s+([^:]+):(\d+)\s+—\s+(.+)$`. Group by severity; findings without `file:line` → unresolved.
+
+**Decision per round:**
+
+- No findings ≥ medium → **clean exit**: before reporting, run the harvest catch-up pass — the same three-question review from `skills/commit/lib/knowledge-harvest.md`, scoped to what emerged during this review/fix cycle only (session-memory dedup against what `commit` step 2 already captured, per that file's dedup framing — not a full re-review). Nothing new → proceed straight to the clean-exit report below, no behavior change. Something new → apply the edit(s), commit (new commit, no amend, conventional message), then push using the exact same MR-state guard already written in this step's item 6 below (same guard, do not paste the bash a second time) — this pass is not a review round and does not consume or reset `CAP`. Then report low findings (informational), stop. `low` is never auto-fixed, but if you decide to apply one, decide before this exit and apply it in a round that still fixes, so that round commits it and a later one reviews it — that costs a round, so it needs one left under `CAP`. Otherwise leave it for good: editing after the clean exit is code no round reviewed, and costs another commit + push.
+- Round N < CAP with medium+ findings →
+  1. Show a summary (count by severity, top 5 messages).
+  2. **Validity filter** — `simo-dev:code-review-protocol` rigor per medium+ finding BEFORE fixing (remote comments come from reviewers without this session's context): (a) technically correct for THIS codebase? (b) fix breaks existing functionality? (c) deliberate design? (d) reviewer had full context? Fails → drop, log `rejected: [severity] file:line — message → reason`. Ambiguous → unresolved.
+  3. Auto-apply passing fixes via `Edit`/`Write`. Track each fix.
+  4. Show the applied fixes as `git -C "<worktree-abs>" diff --stat` + one line per fix (full diff only if the user asks), the rejected list, branch + remote, and the proposed commit message.
+  5. **No gate** — commit unconditionally: NEW commit (no amend), conventional message scoped to the ticket.
+  6. **Pre-push MR-state guard** — re-verify the MR/PR is open (incident 2026-07-17: pushing after a mid-session merge recreates the deleted branch as an orphan — `git push` prints `[new branch]`, easy to miss):
+
+     ```bash
+     R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+     G="$R/lib/check_mr_state.py"
+     if [ ! -f "$G" ]; then
+       echo "STOP: could not verify MR state for '<branch>' — the guard is not at $G, so it never ran. If that path starts at /lib/, R was never bound: re-issue this whole block. Otherwise the plugin dir is incomplete — restart the session to rebind the plugin root. Pushing blind risks recreating a merged branch as an orphan. The fix commit is local."; exit 2
+     fi
+     MR_STATE=$(python3 "$G" "<branch>" --forge "<forge>" --cwd "<worktree-abs>")
+     MR_STATE_RC=$?
+     if [ -z "$MR_STATE" ]; then
+       echo "STOP: could not verify MR state for '<branch>' — the guard exited rc $MR_STATE_RC but printed nothing, so it never answered. That is the guard itself being broken (a crashing or truncated check_mr_state.py, or a usage error such as a bad --forge or a relative --cwd), not a bad token. A crash or a usage error left a line on stderr above; a truncation leaves nothing at all, and that silence is the tell. Pushing blind risks recreating a merged branch as an orphan. The fix commit is local."; exit 2
+     elif [ $MR_STATE_RC -eq 0 ] || [ $MR_STATE_RC -eq 3 ]; then
+       [ $MR_STATE_RC -eq 3 ] && echo "WARNING: no MR found for '<branch>' mid-loop — an MR should exist by now."
+       git -C "<worktree-abs>" push -u origin "<branch>"
+     elif [ $MR_STATE_RC -eq 1 ]; then
+       echo "STOP: MR/PR for '<branch>' is now '$MR_STATE' — likely merged/closed mid-session; pushing would recreate '<branch>' as an orphan. The fix commit is local, ready to cherry-pick onto a fresh branch."; exit $MR_STATE_RC
+     else
+       # No backticks in these messages: inside a double-quoted echo they are command substitution,
+       # so the identifiers they were meant to quote get executed and then deleted from the output.
+       echo "STOP: could not verify MR state for '<branch>' (glab/gh missing, bad token, network down, a transient forge error, or a bad --cwd such as an unsubstituted <worktree-abs>) — pushing blind risks recreating a merged branch as an orphan. The fix commit is local; re-run once the guard can verify again."; exit $MR_STATE_RC
+     fi
+     ```
+
+     What the codes mean — the block decides, so never re-issue the push from a separate call. **Two tests run before any rc is read, and both end the loop with `2`**: the guard file is not there (`[ -f "$G" ]`), and the guard printed nothing (`[ -z "$MR_STATE" ]`). An rc can say why a helper failed, never that it answered, and an unanswered guard would push blind on either push branch — rc `0` included, since a script truncated to valid syntax exits `0` with empty stdout (both worth logging in a personal notes file if you keep one — section "A custom exit code that the interpreter also produces, with the same empty stdout"; how a live session's script path vanishes under it is the section "Releasing a plugin kills the hooks of every already-open session", both in the author's own). Past those two tests, `0` (open) and `3` (not found, unexpected mid-loop since an MR should exist by now) are the only push branches; after either, back to step 2 for round N+1. Force-push stays forbidden; merge never auto. `1` (merged/closed) ends the loop. So does everything on the `else`, `2` (could not verify) included — fail closed, and re-run once the guard can verify again. That "re-run" applies to the `else` only: the existence test and the arrival test above mean the guard never ran or never answered, so an unattended caller parks on them rather than retrying — with the one evidence-gated exception `simo-dev:commit` step 5's classifier spells out, and its evidence differs per arm: a `/lib/…` root in the path the existence stop echoes, or, for the arrival stop, an argparse line on **stderr** naming a bad `--forge` or a non-absolute `--cwd`. Those are the caller's own substitution — re-issue the block with the literals in place and run it once more before parking. A rejected `git push` also exits `1`, being the last command of the push branch, but prints git's own error and no `STOP:` line — that is not the guard stopping you: fetch, rebase and retry the round.
+
+  **Thread reply policy (parallel to item 5)** (GitHub only) — for findings from inline comments: reply in-thread (`gh api .../comments/{id}/replies`) "Fixed in <sha>." after the commit, or "Not applied — <rationale>." at filter-reject time. Never "thanks"/"great point" — technical acknowledgment only. GitLab: resolve via `glab` if straightforward, else leave to the user.
+- Round N == CAP with medium+ findings → **cap reached**: surface the full unresolved list (especially `critical`), do NOT auto-push, hand off to `simo-dev:code-review-protocol` (receiving side). Before taking this branch, apply step 1.5's escalation: run the validity filter (item 2 above) on this round's `high`/`critical` findings first — this branch otherwise never runs it, so the escalation would hang on a verdict the procedure never produces. A surviving `high`/`critical` here **or in any earlier round** means `CAP` is already 5, so the loop continues and that round takes the fix + commit + push branch above, not this one.
+
+### 7.5. Pre-merge QA verify gate (optional)
+
+Runs after step 7 exits clean, before the merge (human gate, outside this skill — unchanged). Active only in repos with a release skill that can deploy an **arbitrary branch** to QA (verify arbitrary-branch support first); not detected → skip silently, zero behavior change elsewhere.
+
+Not always-on — ask only when the diff touches ranking/scoring/search-query code, importers/generators, or runtime-behavior config, OR a release skill is present but that heuristic is inconclusive. Otherwise skip silently — trivial merges shouldn't slow down.
+
+On yes: deploy the branch to QA (same tracks the diff touches) → wait for / trigger the scheduled eval+perf run → compare against the last valid pre-deploy baseline (same scheduler/environment) → present the comparison, ask explicit go/no-go before the user proceeds to merge.
+
+> Full procedure (capability list, heuristic patterns, multi-track deploy gotcha, QA-vs-PROD scheduler gotcha): `lib/pre-merge-qa-gate.md` — load when the gate triggers.
+
+### 8. Post-merge transition + verification notes + worktree cleanup
+
+Runs only after the user has explicitly merged (the merge is a separate human gate, outside this skill). Then:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+KEY=$(python3 "$R/lib/derive_ticket_key.py" "<branch>" --cwd "<worktree-abs>")
+if [ -n "$KEY" ]; then
+  PREFIX="${KEY%%-*}"
+  TARGET=$(python3 "$R/lib/tracker_config.py" get "$PREFIX" post_merge_state)
+  [ -z "$TARGET" ] && TARGET="Ready for Testing"
+  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$KEY" "$TARGET" --leaf-only --sync-parent || echo "WARNING: transition_cmd failed for $KEY -> $TARGET (continuing)"
+fi
+```
+
+Target state comes from `post_merge_state` for the prefix, defaulting to `"Ready for Testing"` when unset. `DEV_FLOW_NO_TRACKER=1` / `.claude/no-tracker` marker skip; no `transition_cmd` configured for the prefix also skips, no special-case needed; forward-only no-op if the ticket already moved past target. A `transition_cmd` failure — any non-zero exit, including a `--leaf-only` refusal on an umbrella ticket or a `--sync-parent` exit 7 (all the parent's sub-tasks at/past Done — verify and close it by hand, see `simo-dev:task-intake` step 2.5) — only prints the warning above and the flow continues.
+
+**Verification notes ticket comment** — write it between the ticket transition and the cleanup (the notes need branch/MR/diff context that cleanup destroys). Consumed at release time by the release skill's per-ticket verify step, which confirms the deployed behavior and transitions the ticket (`Ready for Deploy` after QA deploy, `Done` after prod).
+
+- **Write** when the change alters observable runtime behavior (endpoints/response shapes, search/scoring, jobs/importers, runtime config, bug fixes with reproducible symptom). A passing step 7.5 run this session gets noted in the comment, not skipped.
+- **Skip** for docs/typo-only, test-only, CI config, pure refactors, dependency bumps.
+
+Then auto-execute the worktree cleanup (pre-approved exception — runs ONLY after the user-approved merge) and append the dev-flow journal entry (`~/.claude/state/dev-flow-journal.md`, step 8.5; skip for `--no-mr`/WIP runs that never merged).
+
+> Full procedure (verification-notes comment spec, cleanup script, journal format): `lib/post-merge.md` — load when the merge is confirmed.
+
+## References
+
+- GitLab keychain one-time setup: `lib/keychain-setup.md`.
+- PostToolUse hook to auto-trigger this skill after `git push`: `lib/hook-setup.md`.
+- GitLab vs GitHub quick-reference: `lib/quick-reference.md`.
+- Pre-merge QA verify gate detail (step 7.5): `lib/pre-merge-qa-gate.md`.

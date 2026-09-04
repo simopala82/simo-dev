@@ -1,0 +1,9 @@
+{
+  "title": "Add rate limit to /pay",
+  "description": "Protect the payment endpoint.",
+  "source_branch": "feat/PROJ-1234-rate-limit",
+  "target_branch": "master",
+  "diff_refs": {"head_sha": "deadbeef"},
+  "web_url": "https://gitlab.example/foo/-/merge_requests/932",
+  "iid": 932
+}

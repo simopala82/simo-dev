@@ -1,0 +1,7 @@
+{
+  "title": "Add retry to webhook",
+  "body": "Make the webhook retry on 5xx.",
+  "headRefName": "feat/PROJ-5678-webhook-retry",
+  "baseRefName": "main",
+  "headRefOid": "abc123def456"
+}

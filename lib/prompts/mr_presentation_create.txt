@@ -1,0 +1,45 @@
+You are preparing a merge request description for a code change the author is about to ship. Your job is to write a structured presentation that convinces the reviewer of the change's value AT FIRST GLANCE.
+
+Hard rules:
+- Ground every claim in the diff. If you can't see it in the diff or the commit log, don't write it.
+- Mermaid node labels MUST be double-quoted: `A["..."]`, decision node `C{"..."}`. Quoting lets the label safely contain `[ ] ( ) { } → / =` etc. NEVER backslash-escape brackets (`\[`, `\]`) — backslash is not an escape character in mermaid and it WILL fail to parse. Use `<br/>` for line breaks. Inside a label, write a double quote as `#quot;` — `'` only if a single quote is what you meant — and a literal angle bracket as `#lt;` / `#gt;` — those are mermaid's own escapes, and a bare `<type>` is read as an HTML tag and disappears from the rendering. NEVER HTML entities (`&quot;`, `&lt;`, `&gt;`): they are not mermaid escapes.
+- Put concrete sample data ONLY on the 1-2 edges central to the change (e.g. `B["rates=[111,222,333]"]`). Do NOT label every edge — unchanged context stays terse. Keep the diagram focused: ~4-8 nodes, drop nodes that don't help understand the change.
+- Impact paragraph is technical-neutral, not marketing. The reviewer should learn WHAT changed, not WHY it's great.
+- Write in simple English: short words, short sentences. Keep technical terms the reviewer already knows, cut AI tells (em-dash overuse, rule-of-three, promotional language, overly parallel phrasing).
+- Why-it-matters bullets: business / risk / cost / rollout-safety framing ONLY. If no honest framing exists, return an empty array — never generic filler like "improves maintainability".
+- Do NOT include code-quality opinions, praise, or critique. The reviewer is here to judge, not to read your judgment.
+
+Choose the diagram type (set diagram_type and write matching mermaid):
+- flowchart (`flowchart LR`): data pipeline, control flow, if/else, data transformation.
+- sequence (`sequenceDiagram`): request/response across services/actors, gRPC/HTTP calls, temporal message ordering.
+- before_after (`flowchart` with `subgraph "Before"` / `subgraph "After"`): refactor or behavior change where the delta is the point.
+- state (`stateDiagram-v2`): status/lifecycle transitions (e.g. PENDING --> CONFIRMED).
+
+Highlight what THIS change touches:
+- flowchart / before_after / state: add `classDef changed fill:#2563eb,stroke:#1d4ed8,color:#fff` and tag new/modified nodes `:::changed`; leave unchanged context nodes plain.
+- sequence: mark the added/changed message with `Note over X: new` or wrap it in a `rect`.
+
+Type examples (correct):
+- flowchart: `flowchart LR` / `A["POST /pay"] --> B["charge(amount=4200)"]:::changed`
+- sequence: `sequenceDiagram` / `Client->>API: "POST /pay {amount:4200}"` / `API-->>Client: "200 OK"`
+- before_after: `flowchart LR` / `subgraph "Before"` ... `end` / `subgraph "After"` ... `end`
+- state: `stateDiagram-v2` / `[*] --> PENDING` / `PENDING --> CONFIRMED: "payment ok"`
+
+Context:
+
+Ticket summary:
+{ticket_summary}
+
+Commit log (oldest first):
+{commit_log}
+
+File stat:
+{file_stat}
+
+Branch metadata:
+{branch_meta}
+
+Diff (may be truncated at 50k chars):
+{diff_truncated}
+
+Output: call the StructuredOutput tool with the schema you were given. Required: impact_paragraph, why_it_matters, mermaid, diagram_type. Also produce: title (conventional commit format), suggested_labels (if obvious), warnings (if you noticed issues while summarizing).

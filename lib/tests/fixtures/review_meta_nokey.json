@@ -1,0 +1,7 @@
+{
+  "title": "Tidy logging",
+  "description": "No ticket here.",
+  "source_branch": "chore/tidy-logging",
+  "target_branch": "master",
+  "diff_refs": {"head_sha": "cafef00d"}
+}

@@ -1,0 +1,6 @@
+{
+  "ticket_summary": "PROJ-1234: add goodbye function and emphasize hello",
+  "commit_log": "abc1234 feat(PROJ-1234): add goodbye + emphasize hello",
+  "file_stat": " src/foo.py | 4 +++-\n 1 file changed, 3 insertions(+), 1 deletion(-)",
+  "branch_meta": {"source": "feat/proj-1234-goodbye", "target": "master", "head_sha": "abc1234"}
+}

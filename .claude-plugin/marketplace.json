@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "simo-dev-marketplace",
+  "owner": {
+    "name": "Simone Palazzo"
+  },
+  "plugins": [
+    {
+      "name": "simo-dev",
+      "description": "Personal end-to-end dev flow: intake, review-loop, commit, MR follow-up.",
+      "source": {
+        "source": "url",
+        "url": "git@github.com:simopala82/simo-dev.git",
+        "ref": "master"
+      }
+    }
+  ]
+}

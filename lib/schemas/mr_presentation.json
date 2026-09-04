@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["impact_paragraph", "why_it_matters", "mermaid", "diagram_type"],
+  "properties": {
+    "title":            {"type": "string", "maxLength": 120, "description": "Conventional commit format: type(SCOPE): subject. Required by Python validation in mode=create."},
+    "diagram_type":     {"type": "string", "enum": ["flowchart", "sequence", "before_after", "state"], "description": "Diagram shape best fitting the change. flowchart: data pipeline / control flow. sequence: request/response across services. before_after: refactor where the delta is the point (two subgraphs in one flowchart). state: status/lifecycle transitions."},
+    "impact_paragraph": {"type": "string", "minLength": 80, "maxLength": 600, "description": "One paragraph: what the change introduces/modifies, key toggles or config, fail-safe behavior, observability hooks. No code-quality opinions, no praise."},
+    "why_it_matters":   {"type": "array", "minItems": 0, "maxItems": 4,
+                         "items": {"type": "string", "maxLength": 200},
+                         "description": "Bullets framed as business / risk / cost / rollout-safety value."},
+    "mermaid":          {"type": "string", "description": "Valid mermaid of the declared diagram_type (flowchart->'flowchart', before_after->'flowchart', sequence->'sequenceDiagram', state->'stateDiagram-v2'). NO fences. ALL node labels double-quoted (A[\"...\"], C{\"...\"}); NEVER backslash-escape brackets (\\[ \\] — backslash is not an escape character in mermaid); use <br/> for line breaks. Inside a label write a double quote as #quot; (' only if a single quote is what you meant), and a literal angle bracket as #lt; / #gt; — those are mermaid's own escapes, and a bare <type> is read as an HTML tag and disappears from the rendering. NEVER HTML entities (&quot; &lt; &gt;). Concrete sample data ONLY on the 1-2 edges central to the change, not every edge. Highlight new/changed nodes (classDef + :::changed for flowchart/before_after/state; Note/rect for sequence). Keep it focused: ~4-8 nodes."},
+    "suggested_labels": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+    "warnings":         {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 5},
+    "ticket_drift":     {"type": "boolean", "description": "Review mode only: true if the diff implements materially less or more than the linked ticket's scope. Omit/false in create mode."},
+    "drift_note":       {"type": "string", "maxLength": 300, "description": "Review mode only: one factual line on how the diff diverges from ticket scope (e.g. 'ticket asks rate-limit on /pay; not in diff'). Empty when no drift."}
+  }
+}

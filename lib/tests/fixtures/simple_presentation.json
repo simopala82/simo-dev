@@ -1,0 +1,12 @@
+{
+  "title": "feat(PROJ-1234): add goodbye + emphasize hello",
+  "diagram_type": "flowchart",
+  "impact_paragraph": "Adds a goodbye() function alongside the existing hello() greeter and adjusts hello() to return 'world!' with an emphasis marker. Used by the welcome/farewell middleware in the session lifecycle. No config flag; behavior is unconditional.",
+  "why_it_matters": [
+    "Closes PROJ-1234 (UX consistency between session enter and exit messages)",
+    "No production risk: pure-function additions, no I/O, no DB"
+  ],
+  "mermaid": "flowchart LR\n  REQ[\"GET /session/start\"] --> H[\"hello()<br/>returns 'world!'\"]\n  REQ2[\"DELETE /session/end\"] --> G[\"goodbye()<br/>returns 'bye'\"]\n  H --> RESP1[\"200 OK 'world!'\"]\n  G --> RESP2[\"200 OK 'bye'\"]",
+  "suggested_labels": ["proj", "feature"],
+  "warnings": []
+}

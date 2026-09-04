@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "line_range", "title", "description"],
+        "dependentRequired": {"per_finding_mermaid": ["per_finding_diagram_type"]},
+        "properties": {
+          "severity":            {"enum": ["resolved", "mitigated", "blocker"]},
+          "file":                {"type": "string"},
+          "line_range":          {"type": "string", "description": "e.g. '42-58' or '42'"},
+          "title":               {"type": "string", "maxLength": 100},
+          "description":         {"type": "string", "maxLength": 600},
+          "category":            {"enum": ["security", "data-loss", "breaking-bug", "architectural", "other"]},
+          "per_finding_diagram_type": {"enum": ["flowchart", "sequence", "before_after", "state"], "description": "Diagram shape best fitting THIS finding's code path. flowchart: the data/control path that reaches the bug. sequence: a cross-service/actor call ordering where the issue lives. before_after: when the finding is about a behavior delta. state: when a wrong/missing status transition is the issue. Required whenever per_finding_mermaid is set."},
+          "per_finding_mermaid": {"type": "string", "description": "Valid mermaid of the declared per_finding_diagram_type (flowchart->'flowchart', before_after->'flowchart', sequence->'sequenceDiagram', state->'stateDiagram-v2'). Shows the SPECIFIC code path this finding is about and HIGHLIGHTS the problematic node. NO fences. ALL node labels double-quoted (A[\"...\"], C{\"...\"}); NEVER backslash-escape brackets (\\[ \\] — backslash is not an escape character in mermaid); use <br/> for line breaks. Inside a label write a double quote as #quot; (' only if a single quote is what you meant), and a literal angle bracket as #lt; / #gt; — those are mermaid's own escapes, and a bare <type> is read as an HTML tag and disappears from the rendering. NEVER HTML entities (&quot; &lt; &gt;) — nothing normalizes this diagram before it is written out. Concrete sample data ONLY on the 1-2 edges central to the failure, not every edge. Mark the failing node: flowchart/before_after/state add `classDef problem fill:#ffb3b3,stroke:#c00` and tag it `:::problem`; sequence wrap the bad message in a `rect` or `Note over X: bug`. Keep it focused: ~4-8 nodes. Required for mitigated/blocker by simo-dev:mr-review step 5 validation, optional for resolved."}
+        }
+      }
+    }
+  }
+}

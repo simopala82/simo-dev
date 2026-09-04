@@ -1,0 +1,8 @@
+{
+  "ticket_summary": "Add rate limit to /pay",
+  "commit_log": "abc123 feat: rate limit",
+  "file_stat": " pay.py | 10 +++-",
+  "branch_meta": {"source": "feat/PROJ-1234-rate-limit", "target": "master", "head_sha": "deadbeef"},
+  "jira_scope": "PROJ-1234: Rate-limit /pay\n\nReject >5 req/s per IP.",
+  "jira_key": "PROJ-1234"
+}

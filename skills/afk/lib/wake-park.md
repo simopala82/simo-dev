@@ -1,0 +1,54 @@
+# AFK wake + park mechanics
+
+Loaded on demand from `afk` §4-§6.
+
+## Blocker handling detail (§4)
+
+- **SSO / auth failure** → run the re-auth command, retry the action (bounded, ~3× with backoff). Log `⚠`.
+- **Transient command failure / rate-limit hint** → exponential backoff in-turn; long wait → `ScheduleWakeup`.
+- **Approaching context limit** → rely on harness auto-compaction; all state is on disk (decision-log + plan + `RESUME:` marker), a fresh window continues cleanly.
+
+## Token-limit dead-man's-switch
+
+No reliable mid-turn quota signal exists, so keep one `ScheduleWakeup` always armed, refreshed every turn while AFK is active:
+
+- `prompt`: `simo-dev:afk` (re-invokes the skill on wake).
+- `delaySeconds`: long fallback (1800–3600) — safety net, not active polling.
+
+If a usage limit kills the turn, the queued wakeup fires later. On wake, §0's stop-check runs first — a user interrupt or park leaves a `stopped` entry (`afk_state.py`), so the wakeup exits without resuming. Otherwise: read `RESUME:`, try a cheap action to check quota — back → continue; still limited → re-arm (1h clamp → polls roughly hourly). Re-arm after every meaningful step (`afk_state.py arm` + fresh `ScheduleWakeup`) so the switch never goes stale.
+
+## Decision-log format (§5)
+
+```
+RESUME: <current step + enough context to continue cold>
+## AFK run
+- [gate] direction → y (recommended A: reuse handler Y)
+- [fork] no rec at X → conservative: in-place, reversible
+- [⚠ blocker] SSO expired on glab call → re-auth ok, retried
+- [review-loop] 2 iters, 3 medium fixed, exited clean
+- [🔖 deferred spawn] follow-up: extract helper — accept manually
+- [push] MR !123 created, pipeline running
+```
+
+## Park procedure (§6)
+
+When `simo-dev:mr-followup` settles (pipeline green or findings handled per its cap):
+
+1. Register the completion ping — nothing found acts on the row; `~/.claude/scripts/cleanup.py` only reports the file as stale:
+
+   ```bash
+   tag="${CLAUDE_CODE_SESSION_ID%%-*}"
+   [ -n "$tag" ] && mkdir -p ~/.config/claude-notify \
+     && printf '%s\n' "$tag: dev-afk: <task> ready for merge" >> ~/.config/claude-notify/bg-tasks
+   ```
+
+   > Why the tag and `printf`, never `echo`: logged in the author's own notes (worth keeping a similar log), section "`bg-tasks`: registering into a queue nothing reads".
+
+2. Disarm — in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"`, since shell state does not survive between Bash calls: `python3 "$R/lib/afk_state.py" stop` (writes a `stopped` entry for THIS repo+branch; a stale wakeup now exits at §0) and stop re-arming `ScheduleWakeup`. This file is Read-loaded, so `R` lands on the source tree here while the reader in `skills/afk/SKILL.md` §0 resolves the released cache — see that section's note on why the entry format has to stay frozen across a release boundary, and on which way the mismatch fails.
+3. Print the recap in three buckets from the decision-log — **decisions made** (numbered) / **⚠ blockers retried** / **🔖 deferred spawns awaiting your click** — plus MR link + pipeline status:
+
+> "Implementation complete and on the MR, unattended. Decisions: 1) … 2) … . Blockers retried: … . Deferred spawns: … . MR: <link> (pipeline <status>). Reply `merge` to do the final merge, or a number to revisit that choice."
+
+Then stop and wait. `merge` → the ask is satisfied (user typed it) → run the merge. A number → revisit that decision, re-present.
+
+**Protected-branch variant** (§0 guard hit): terminal state is `simo-dev:commit`'s commit+push gate instead — same 3 steps with ping text "ready for commit+push" and the gate's own ask ("Commit + push to `<branch>`?") replacing the `merge` ask. `y` from the returning user satisfies the gate.
