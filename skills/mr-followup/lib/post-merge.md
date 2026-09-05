@@ -58,8 +58,38 @@ DEFAULT_BRANCH=$(git -C "$MAIN" symbolic-ref --quiet refs/remotes/origin/HEAD 2>
 git -C "$MAIN" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null \
   || { echo "post-merge: origin/$DEFAULT_BRANCH does not exist — run 'git -C \"$MAIN\" remote set-head origin -a', then redo the refresh"; DEFAULT_BRANCH=""; }
 
-git -C "$MAIN" worktree remove <path> || git -C "$MAIN" worktree remove --force <path>
-git -C "$MAIN" branch -D <name>
+# Guard against a concurrent session (or a spawn_task child) still working in this
+# worktree on the same branch — CLAUDE.md "Spawn tasks for cross-session follow-ups"
+# documents exactly this: another session can commit AND push on the branch a session
+# is still working on. A merge elsewhere does not mean this worktree has nothing of its
+# own: uncommitted edits, or local commits made after the merge that never got pushed.
+# `status --porcelain` catches the former; `log HEAD --not --remotes` catches the latter
+# (scoped to HEAD only — a linked worktree shares refs with $MAIN, so an unscoped
+# `--branches --not --remotes` would also flag unrelated local branches).
+# Both read straight from <path> (still a valid checkout at this point) — quoted like every
+# other literal-substituted path in this file, to survive a path containing spaces.
+# Known limitation: `--not --remotes` reads "unpushed" as "unreachable from any
+# remote-tracking ref this checkout currently knows about" — if the branch's own
+# origin/<name> ref gets pruned locally (e.g. `fetch.prune=true`, or GitLab's
+# delete-source-branch-on-merge plus a later `fetch --prune` here) AFTER a squash
+# merge, the original commits become unreachable from origin/$DEFAULT_BRANCH too
+# (squash mints new SHAs), so this permanently reads a fully-merged branch as
+# "unpushed" and the guard keeps skipping it. Fails safe (skip, not delete) — not
+# data loss, just a cleanup that then needs a manual `worktree remove`/`branch -D`.
+# And this check-then-act is not atomic: a commit landing between this capture and
+# the `worktree remove` a few lines below is still unprotected — narrows the race
+# from "always" to "a few lines of gap", does not eliminate it.
+WT_DIRTY=$(git -C "<path>" status --porcelain 2>/dev/null)
+WT_UNPUSHED=$(git -C "<path>" log HEAD --not --remotes --oneline 2>/dev/null)
+if [ -n "$WT_DIRTY" ] || [ -n "$WT_UNPUSHED" ]; then
+  echo "post-merge: worktree <path> has uncommitted or unpushed work — leaving it in place, not deleting branch <name>."
+  [ -n "$WT_DIRTY" ] && printf 'Uncommitted:\n%s\n' "$WT_DIRTY"
+  [ -n "$WT_UNPUSHED" ] && printf 'Unpushed commits:\n%s\n' "$WT_UNPUSHED"
+  echo "Re-run cleanup once the worktree is clean (commit/push, or discard, then remove manually)."
+else
+  git -C "$MAIN" worktree remove <path> || git -C "$MAIN" worktree remove --force <path>
+  git -C "$MAIN" branch -D <name>
+fi
 git -C "$MAIN" worktree prune
 
 # Refresh $MAIN only when it is already on the default branch with no tracked changes —
@@ -76,7 +106,7 @@ fi
 
 Pull failed with "untracked working tree files would be overwritten by merge" → leftover carried originals (a `cp` during intake carry instead of a move — task-intake `lib/worktree-carry.md`). For each file the error lists: remove it ONLY if identical to the incoming tracked version (`git -C "$MAIN" show "origin/$DEFAULT_BRANCH:<path>" | diff - "$MAIN/<path>"`), then retry the pull once. Content differs → leave the file, report it, continue cleanup.
 
-Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`), plus one line whenever the refresh did not land — the skip line verbatim, or the pull's own error. Neither is a failure of this step, but both leave `$MAIN` behind the remote — and on the skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
+Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`) — or, when the dirty/unpushed guard fired, report that guard's own skip line verbatim instead (worktree and branch were left in place, not an error). Plus, separately, one line whenever the main-refresh below did not land — that step's own skip line verbatim, or the pull's own error. Neither refresh outcome is a failure of this step, but both leave `$MAIN` behind the remote — and on that skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
 
 ## Dev-flow journal (step 8.5)
 
