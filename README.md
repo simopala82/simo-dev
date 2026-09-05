@@ -6,6 +6,21 @@ This README is the entry point — what the plugin does and how its skills chain
 
 ## Installation
 
+### Easiest: ask Claude Code to do it
+
+The simplest install path is to just ask Claude Code itself: open a session (in any repo)
+and ask it to install this plugin from `github.com/simopala82/simo-dev`. Claude will run the
+`/plugin marketplace add` and `/plugin install` commands from "Install from GitHub" below for
+you, and can also confirm the marketplace registered and the plugin loaded correctly.
+
+For example:
+
+> Install the plugin https://github.com/simopala82/simo-dev and set it up with
+> `/simo-dev:model-strategy`.
+
+Run `/simo-dev:onboard-repo` from a Claude Code session opened in the target repo's own
+folder — it configures that repo's conventions, not the plugin itself.
+
 ### Prerequisites
 
 - **Claude Code CLI**, not just the Claude Desktop app. `/plugin marketplace add` and
