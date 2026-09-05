@@ -1,4 +1,4 @@
-## 1.0.1 (2026-09-04)
+## 1.1.0 (2026-09-05)
 
-### Other Changes
-- chore(afk): log discarded plan-critique findings in decision-log
+### Features
+- feat(task-intake): auto-apply objective plan-critique findings at the gate
