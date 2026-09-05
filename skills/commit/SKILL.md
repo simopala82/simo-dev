@@ -296,6 +296,8 @@ A `transition_cmd` failure — any non-zero exit, including a `--leaf-only` refu
 
 ### 10. After the MR
 
+`Suggestion: consider spawn_task — mr-followup can run in a fresh session (CI wait + auto-fix rounds), cwd = this worktree.` Print it always, unconditionally — never a heuristic, never a gate, never mentions a model (mirrors the `Suggestion: consider spawn_task` style already used in `simo-dev:task-intake` step 7.5 for large plans). Purely informational: the cascade continues exactly as below whether or not the user acts on it, so a headless/autopilot caller is never blocked by it.
+
 Invoke `simo-dev:mr-followup` directly, no ask (note "Entering simo-dev:mr-followup"), passing the cap decided in step 1; it watches the pipeline, auto-handles findings (unconditional commit+push there too), **parks before the merge**. Same terminal point as `simo-dev:afk`. The WIP opt-out is `--no-mr` (skips MR creation entirely, step 6).
 
 > Alternate paths (existing-MR / protected-branch / WIP opt-out / commit-message recovery): `lib/alt-paths.md` — load when step 6 finds an existing MR, you're on a protected branch, `--no-mr` is set, or a commit needs message recovery.

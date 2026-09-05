@@ -78,7 +78,28 @@ before the cap-reached branch. Announce the value in one line so the report is a
 
 ### 2. Run review (iteration N, starting at 1)
 
-Invoke `simo-dev:code-review-protocol` (requesting side) with the diff — dispatching the reviewer agent directly skips its anchored `REPO:` first-line rule, and a dispatch without that line writes no review record, so `simo-dev:commit` step 1 runs another full loop. Large diff (> ~50k chars) → `git diff --stat` + per-file slices for files under 1k lines, skip generated files.
+```bash
+BASE=$(git -C "<worktree-abs>" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+if [ -z "$BASE" ]; then
+  # origin/HEAD is not set on every clone (`git fetch` does not set it) — same
+  # fallback lib/check_base_freshness.py's default_base() already uses.
+  for cand in main master; do
+    if git -C "<worktree-abs>" rev-parse --verify --quiet "origin/$cand" >/dev/null 2>&1; then
+      BASE="$cand"
+      break
+    fi
+  done
+fi
+[ -n "$BASE" ] || { echo "STOP: cannot determine default base (origin/HEAD unset, no origin/main|master)"; exit 1; }
+git -C "<worktree-abs>" fetch origin "$BASE" --quiet
+BASE_SHA=$(git -C "<worktree-abs>" merge-base HEAD "origin/$BASE")
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+DIFF=$(python3 "$R/lib/diff_capture.py" "<worktree-abs>" --include-untracked -- "$BASE_SHA")
+DIFF_RC=$?
+printf 'rc=%s\n%s\n' "$DIFF_RC" "$DIFF"
+[ $DIFF_RC -eq 0 ] || { echo "STOP: diff capture failed (rc $DIFF_RC) — do not dispatch the reviewer on a partial/empty diff."; exit 1; }
+```
+Invoke `simo-dev:code-review-protocol` (requesting side), passing `$DIFF` as the diff content for the dispatch prompt and `$BASE_SHA` for its `REPO:`/marker use — in place of that protocol's own default `origin/develop`, avoiding a base mismatch between the two. This dispatch already has a gated, computed diff in hand, so code-review-protocol's own item-1 capture (including its fallback) does not run a second time for this caller — per the note that fallback carries. `$DIFF` is already gated by size at capture (`lib/diff_capture.py`, ~50k-char threshold, same number everywhere in this plugin) — forward it unmodified, never re-sliced downstream. If a trailing `Full diff written to: <path>` line is present, that path can be read with `Read` if the full content is ever needed. Dispatching the reviewer agent directly (instead of via this protocol) skips its anchored `REPO:` first-line rule, and a dispatch without that line writes no review record, so `simo-dev:commit` step 1 runs another full loop.
 
 **Iterations ≥ 2 — memory of prior iterations.** A resume of iteration 1's reviewer (`SendMessage`) is cheaper, still holds its own iteration-1 reasoning, and records coverage like a fresh dispatch (`SubagentStop`). But `SendMessage` **returns immediately** with `resumed … in the background` — that acknowledgement is not the review. Resume means calling the `SendMessage` tool itself with that agent's id — dispatching a fresh `Agent` call instead, even one whose prompt opens with `to: <agentId> ...` to **simulate** a resume, spawns a brand-new session with none of iteration 1's memory and no `REPO:` line as its first line, so it writes no attributable review record at all. It can still read the diff fresh and return a coherent-looking review, so nothing fails at runtime — the gap surfaces only later, at `simo-dev:commit` step 1's `lib/review_marker.py check` (rc 1, "changed after the last review"). Register the background task first (CLAUDE.md "Background Tasks"), then parse the agent's task notification when it arrives; parsing the return value yields zero findings and step 4 reads that as a clean exit. **Never edit files while ANY review is in flight** — resumed or dispatched, and a dispatch is background unless it passes `run_in_background: false`: the record's epoch is the reviewer's conclusion time, so an edit made in that window reads as covered by a review that never saw it. A fresh dispatch is stateless instead. **Both paths carry the memory block** — the caller produced or judged all of it after the resumed agent concluded — in the resume message, or, for a fresh dispatch, **below the `REPO:` line**, never above it: above, the marker stops being line 1 and the record is never written. Open it with "The following were already evaluated, each with the reason given. Do NOT re-flag them unless you can refute the rationale with new evidence.", then three **cumulative** lists — every iteration's entries, never just the last one's:
 
@@ -120,7 +141,14 @@ Then increment N. N ≤ CAP → back to step 2. N > CAP with remaining medium+ �
 
 ### 8. Present and hand off
 
-Show, in order: (1) summary line (iterations, fixed by severity, unresolved); (2) fix log; (3) rejected findings with rationale; (4) unresolved findings by severity (critical always shown); (5) aggregated diff of THIS loop's changes; (6) low findings (informational — decided at step 4, not here).
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/diff_capture.py" "<worktree-abs>" --include-untracked -- HEAD
+DIFF_CAPTURE_RC=$?
+[ $DIFF_CAPTURE_RC -eq 0 ] || echo "WARNING: diff capture failed (rc $DIFF_CAPTURE_RC) for the report — show this failure in place of item (5)'s content, do not block the rest of step 8 on it."
+```
+
+Show, in order: (1) summary line (iterations, fixed by severity, unresolved); (2) fix log; (3) rejected findings with rationale; (4) unresolved findings by severity (critical always shown); (5) the script's output above (full diff if small, `--stat` + slices + temp-file path if large — same threshold, no special case for this report versus any other call site); this is the full working-tree-vs-HEAD diff — implementation plus any fixes applied during this loop combined (`review-loop` never commits, per this file's own Notes, so nothing here is committed separately) — not only the incremental per-iteration fixes in isolation; (6) low findings (informational — decided at step 4, not here).
 
 Then decide:
 - Clean, ship-flow invocation (proactive trigger) → announce "Review loop clean → `simo-dev:commit`" and invoke `simo-dev:commit` directly (the merge remains the one hard gate downstream). Three cases stop at the report instead:
