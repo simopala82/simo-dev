@@ -14,7 +14,7 @@ Mid-session toggle: detect where you are in the canonical flow and drive it to *
 
 **Launch as `/loop simo-dev:afk`** (no interval — self-paced): the §4 dead-man's-switch uses `ScheduleWakeup`, honored only inside `/loop`. Invoked plain → works but no auto-resume after a rate-limit pause; say so once and continue.
 
-Every `afk_state.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` — shell state does not survive between Bash calls.
+Every `afk_state.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` — shell state does not survive between Bash calls — and always passes `--repo "<worktree-abs>"`, the absolute path of the worktree this task is using (the main checkout, if the task has none), so repo+branch identity never depends on the Bash tool's own cwd. Same requirement in `lib/wake-park.md`. On a wakeup re-fire, re-derive `<worktree-abs>` from the `RESUME:` line at the top of the decision-log (§5) — never assume it from the ambient cwd.
 
 ## Boundaries (inviolable — even unattended, even under "no interruptions" pressure)
 
@@ -32,14 +32,14 @@ Every `afk_state.py` call below runs in a Bash block opening with `R="${CLAUDE_P
 
 While AFK is active (`afk_state.py is-active` exits 0), any **genuine user message** (not the wakeup re-fire) = the user is back → **stop driving**:
 
-1. `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" stop` — tombstone for THIS repo+branch (already-armed wakeups exit at §0; other sessions untouched). Binding spelled out here rather than left to the convention above, same as `lib/wake-park.md`'s disarm: an unbound `R` exits rc 2 and writes no tombstone, while items 2-4 still announce "AFK off" — after which a queued wakeup re-fires and AFK resumes driving over the user.
+1. `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` — tombstone for THIS repo+branch (already-armed wakeups exit at §0; other sessions untouched). Binding spelled out here rather than left to the convention above, same as `lib/wake-park.md`'s disarm: an unbound `R` exits rc 2 and writes no tombstone, while items 2-4 still announce "AFK off" — after which a queued wakeup re-fires and AFK resumes driving over the user.
 2. No `ScheduleWakeup` this turn → the `/loop` winds down.
 3. Append `[interrupt] user took over → AFK disarmed` to the decision-log; keep the `RESUME:` line.
 4. One-line ack ("AFK off — you're driving. `simo-dev:afk` to resume."), then answer interactively — §2 no longer applies.
 
 ## 0. Arm (or honor a prior stop)
 
-**Stop-check — first action on every entry, including a wakeup re-fire.** `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" is-stopped` (checks ONLY this repo+branch). Binding spelled out at the site, not left to the convention above: this is the one call whose rc the body reads as a boolean, so an unbound `R` exits 2, falls through to Arm, and drives over a stop the user asked for. Exits 0 →
+**Stop-check — first action on every entry, including a wakeup re-fire.** `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" is-stopped --repo "<worktree-abs>"` (checks ONLY this repo+branch). Binding spelled out at the site, not left to the convention above: this is the one call whose rc the body reads as a boolean, so an unbound `R` exits 2, falls through to Arm, and drives over a stop the user asked for. Exits 0 →
 - user explicitly (re)started AFK this turn → `afk_state.py arm` and continue below;
 - else (stale wakeup) → print "AFK is off for this task — `simo-dev:afk` to resume." and **exit**.
 
@@ -54,7 +54,7 @@ Treat the entry format, the epoch's units and `repo_identity` as frozen unless y
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/afk_state.py" arm
+python3 "$R/lib/afk_state.py" arm --repo "<worktree-abs>"
 ```
 
 ## 1. Detect current state & resume
@@ -77,7 +77,7 @@ Then run forward to the park point.
 While AFK is active, auto-answer every gate and **append each answer to the decision-log**:
 
 - **Direction gate** → `y` (recommended direction). If `deep-dive` would be the default, take the recommended candidate instead, log `deep-dive skipped → took recommended <X>`. Never enter brainstorming/grill (they block on the user).
-- **Plan-review gate** → `y`. When step 7.5 printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`. When it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line — the gate looks exactly as it does today.
+- **Plan-review gate** → `y`. When plan-write's review gate printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`. When it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line — the gate looks exactly as it does today.
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
 - **Any other fork with no clear recommendation** → most conservative / most reversible option, logged.

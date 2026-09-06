@@ -20,7 +20,7 @@ the only thing that separates them, the task worktree, is invisible to the hook.
 and `MODE` can be decided on them. There is deliberately no time bound: the
 task's own entries are all logged BEFORE its first commit and even before its
 branch exists (the hook fires when a skill is invoked, and simo-dev:task-intake
-creates the branch at its step 6), so every anchor available at step 8.5 is too
+creates the branch at its step 6, now invoked from step 8 (ADR 0015)), so every anchor available at step 8.5 is too
 late and drops the very entries this log exists to record. Over-reporting an
 earlier task is the cheaper failure than losing the current one.
 

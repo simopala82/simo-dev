@@ -94,6 +94,72 @@ Run yourself, fix inline:
 2. **Placeholder scan** — search the plan for the patterns above.
 3. **Cross-task consistency** — names, signatures, and types used in later tasks match their definitions in earlier tasks.
 
+## Plan critique and review gate
+
+**Read the plan file from disk first** (always — subagent-authored plans never reached this context). Then run the base-freshness check against the plan's declared files — once, synchronously, right here; not repeated later in this same gate loop (an `edit`/`restart` round-trip re-runs it naturally next time this section executes from the top):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files
+```
+
+- rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
+- rc 0 or rc 2 → no change to the summary.
+
+Then read the `plan_critique` model config — defaults to `fable` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+PLAN_CRITIQUE_MODEL=$(python3 "$R/lib/model_strategy.py" get plan_critique)
+if [ "$PLAN_CRITIQUE_MODEL" = "none" ]; then
+  PLAN_CRITIQUE_MODEL=""
+elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
+  PLAN_CRITIQUE_MODEL="fable"
+fi
+```
+
+Empty (only reached via the explicit `none` sentinel now) → no dispatch. Non-empty → dispatch an `Agent` with `subagent_type: simo-dev:plan-reviewer`, `model: $PLAN_CRITIQUE_MODEL`, `run_in_background: false` (same reasoning as `code-review-protocol` item 2: the gate must see the findings before the user is asked to proceed) — prompt = the plan file content just read from disk plus the gathered context already available at this section. Parse the response's findings in the same `[severity] location — message` line format `code-reviewer` findings use elsewhere in this plugin.
+
+**Auto-apply objective findings, before the gate is shown.** Classify each parsed finding:
+
+- **Objective** — severity `critical`/`high` AND the finding names a mechanically verifiable plan defect: a wrong anchor/reference, a non-executable command, a dead/unused variable, an empty assertion, and similar. Fix it with a targeted `Edit` to the plan file, right here — do not wait for an `edit` at the gate below, and never a full `plan-write` regeneration for these (that scope belongs to judgment findings, where the human sees and approves the resulting diff).
+- **Judgment** — anything else: severity `medium`/`low`, or the finding argues for an alternative direction, scope, or design choice. This escape hatch overrides severity — a `critical`-tagged design objection is still judgment, never auto-applied. Judgment findings wait for the user at the gate, unchanged from today.
+
+Round 1 is the initial dispatch just above. After applying a round's objective fixes, re-read the plan file from disk (never the pre-fix content still sitting in context) and re-dispatch `plan-reviewer` on it — same model, same call shape, prompt built the same way as round 1: from the freshly re-read file, not from memory. Repeat classify → autofix → re-review for up to 3 rounds total. On round 3, stop auto-applying: any remaining objective findings fall through to the gate as judgment findings instead, tagged `(autofix cap reached)` in the `⚠ Plan critique` list — this bounds the loop if the reviewer keeps surfacing new objective findings every round.
+
+Carry judgment findings forward cumulatively across rounds — each re-dispatch is a stateless call with no memory of earlier rounds, so a judgment finding from round 1 that round 2's dispatch doesn't re-surface (new objective findings crowding it out, or plain non-determinism) must still reach the gate. Keep a **gate findings set**: every judgment finding seen across all rounds, deduped by the **(location, message) pair** — never by location alone, since a location is a single string (a task or a file reference) and `plan-reviewer`'s independent check categories can legitimately raise two distinct findings against the same one — plus (round 3 only) any objective findings the cap pushed there. On a genuine (location, message) match across rounds, keep the `(autofix cap reached)` tag if any colliding occurrence carries it — a merge must never silently drop it. Exact-string match only: a differently-worded restatement of the same finding across rounds is not deduped by this rule and can surface as a separate entry — accepted, to keep the check simple. This set — not any single round's raw output — is what both the `⚠ Plan critique` list below and the `Recommended: edit` count reference.
+
+If any autofix round ran above, re-read the plan file from disk again — the summary below must reflect the post-autofix content, never the pre-fix version still sitting in context.
+
+Then show:
+
+- Clickable absolute path; 1-line gist + ticket key + branch.
+- **Plan summary** from the file just read (never memory): Goal (header line), Approach (2-3 bullets from Architecture), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
+
+Path + gist + summary MUST be visible markdown in the chat reply BEFORE the gate prompt — AskUserQuestion IS allowed here, but only in the same turn AFTER the text block (widget fields truncate; never their only carrier). Multiple plan files → one summary block each, single gate.
+
+On rc 1 above, print immediately above the gate prompt: `Recommended: restart — base advanced on file(s) this plan also targets.` (mirroring how a `Recommended:` line reads elsewhere in this plugin). On rc 0 or rc 2, no such line — the gate looks exactly as it does today.
+
+When the gate findings set above is non-empty, print a second line immediately above the gate prompt: `Recommended: edit — <n> finding(s) from plan critique.` (`<n>` = the gate findings set's size) — on its own line. When `plan_critique` is explicitly disabled (set to `none`), or the gate findings set is empty, no such line prints — this holds even if earlier rounds auto-fixed objective findings, since those no longer need an `edit`. The two `Recommended:` lines are independent and can both print together; when both fire, `Recommended: restart` prints first, `Recommended: edit` second.
+
+The "Tasks" and "Files touched" bullets above already produce a task count and a deduped file count for the plan just read — reuse those two counts here, do not recompute them. A plan is "large" when its task count is greater than 5, or its file count is greater than 8. When the plan just read is "large" by either measure, print a third line immediately above the gate prompt — `Suggestion: consider spawn_task — plan has <n> tasks across <m> files.` (`<n>`/`<m>` = the two counts) — after any `Recommended:` line(s) above, on its own line. This suggestion never blocks the gate, never mentions a model (spawn_task takes none), and is independent of both `Recommended:` lines — it can appear alone, or alongside either or both of them.
+
+> "Plan written to `<path>`. Review it:
+> - **`y`** — proceed to hand-off (the caller's next step).
+> - **`edit <feedback>`** — apply changes, re-present this gate.
+> - **`restart`** — tell the caller a new direction is needed; editing won't fix it."
+
+On `edit` → apply the requested changes to the plan file directly (targeted `Edit`, or a full internal rewrite of the affected tasks), then loop back to the top of this section (re-run the base-freshness check and re-dispatch `plan-reviewer` on the freshly edited file, same as any other re-entry). On `restart` → do not decide what this means; report back to the caller that the user chose `restart` and stop here — the caller (`simo-dev:task-intake`, `simo-dev:grill-me`, or any other invoker) owns what `restart` means in its own flow. No interactive user to answer the gate (detectable from the caller's own dispatch — e.g. `private/autopilot.py`'s `_plan_prompt` carries the literal token `NON-INTERACTIVE` in its prompt text) → skip the `y`/`edit`/`restart` prompt itself (there is no one to answer it), but still run everything above it (base-freshness check, the autofix rounds) and still produce the plan summary; append any remaining judgment findings from the gate findings set to the plan file itself, under a trailing `## Plan critique (unresolved)` heading, one `[severity] location — message` line each — so they surface wherever that caller's own human review happens (for `autopilot`, its existing Plan MR review), instead of being silently dropped. If the gathered context carries no ticket key at all (as `autopilot`'s headless invocation does not — its prompt names a `.ai-pipeline/{key}/ticket.txt` path, not a ticket key handed to `plan-write` as gathered context), the post-plan-comment call below no-ops on the empty key exactly as it does today — this preserves `autopilot`'s existing behavior of never posting a tracker comment from the plan-write step; it does not need a separate guard. A `Recommended:` line above is a recommendation, not a block — `y` still proceeds to hand-off regardless of what was recommended. Gate exits on `y`, `restart`, or the no-interactive-user fallback above — all three are terminal outcomes handled by returning control to the caller; only `edit` loops back within this section.
+
+Once the gate above exits on `y` (interactively, or via the no-interactive-user fallback above, which also counts as `y` for this purpose): post a plan comment, same mechanism as `post_tracker_comment.py`'s other call sites in this plugin. Body = the "Plan summary" block already built for the gate prompt (goal, approach, tasks, files touched, risks/verification) — never the raw plan file, which can run long; the summary is already the right size for a ticket comment. Write it to a temp file, then the same `R`-bound call shape used elsewhere for tracker comments:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/post_tracker_comment.py" "<KEY-or-empty>" "<tmpfile>"
+```
+
+Announce `Plan: <script's stdout line>`.
+
 ## Done
 
-Return to the caller — `simo-dev:task-intake` presents its plan review gate (step 7.5) and owns the execution hand-off.
+The plan-critique and review gate above already ran before this point is reached — the caller does not need to run its own review. On the gate's `y` (interactive, or the no-interactive-user fallback), this section has already posted the plan comment (using whatever ticket key was in the gathered context — an empty key is the script's own existing no-op, unchanged) and now returns control to the caller for hand-off. On `restart`, this section returns control to the caller immediately with that outcome, and the caller decides what happens next.

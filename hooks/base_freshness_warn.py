@@ -112,7 +112,7 @@ def main() -> int:
 
     ctx = (f"REMINDER: origin base advanced since this task's worktree was created, "
            f"touching files its plan declares -- {out}. Re-verify the plan is still "
-           f"current before continuing (see simo-dev:task-intake step 7.5's recovery).")
+           f"current before continuing (see simo-dev:plan-write's own Plan critique and review gate section).")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": ctx}}))
     return 0
 

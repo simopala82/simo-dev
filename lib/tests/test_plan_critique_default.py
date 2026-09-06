@@ -1,12 +1,12 @@
 """Tests for the plan_critique default/sentinel bash logic used at
-task-intake SKILL.md step 7.5 (the block that resolves PLAN_CRITIQUE_MODEL).
+plan-write SKILL.md's Plan critique and review gate section (the block that resolves PLAN_CRITIQUE_MODEL).
 model_strategy.py itself is unchanged; this snippet is the only place that
 knows plan_critique defaults to "fable" and that "none" disables dispatch."""
 import subprocess
 from pathlib import Path
 
 LIB = Path(__file__).parent.parent / "model_strategy.py"
-SKILL_MD = LIB.parent.parent / "skills" / "task-intake" / "SKILL.md"
+SKILL_MD = LIB.parent.parent / "skills" / "plan-write" / "SKILL.md"
 
 SNIPPET = '''
 PLAN_CRITIQUE_MODEL=$(python3 "{lib}" get plan_critique --config "{config}")
@@ -72,10 +72,10 @@ def _if_block(lines):
 
 
 def test_skill_md_if_block_matches_tested_snippet():
-    """Anti-drift guard: the if/elif/fi block shipped in task-intake/SKILL.md step 7.5 must
-    stay byte-identical to the block exercised by the tests above. A future edit to either
-    side without the other would otherwise leave this test suite green while the shipped
-    logic diverges from what was actually verified."""
+    """Anti-drift guard: the if/elif/fi block shipped in plan-write/SKILL.md's Plan critique and
+    review gate section must stay byte-identical to the block exercised by the tests above. A
+    future edit to either side without the other would otherwise leave this test suite green
+    while the shipped logic diverges from what was actually verified."""
     shipped = _if_block(SKILL_MD.read_text().splitlines())
     tested = _if_block(SNIPPET.strip("\n").splitlines())
     assert shipped == tested

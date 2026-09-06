@@ -1,6 +1,6 @@
 ---
 name: task-intake
-description: Use when starting work from a ticket OR a free-text task prompt. Produces a worktree + detailed plan. First step of the canonical task flow.
+description: Use when starting work from a ticket OR a free-text task prompt. Produces a detailed plan and (at hand-off) a worktree. First step of the canonical task flow.
 ---
 
 # Dev Task Intake
@@ -63,7 +63,7 @@ The signals above can surface after intake ends — typically during `simo-dev:c
 3. **Point this branch's flow at the sub-task, without renaming an already-pushed branch**: write the sub-task key to `.claude/ticket-key-override` in the worktree root (single line, e.g. `PROJ-1994`) — `derive_ticket_key.py` reads it before falling back to the branch-derived key, so every later transition in this session (commit, mr-followup) targets the sub-task automatically. Worktree-local and untracked; never commit it — check `.claude/ticket-key-override` is gitignored in this repo BEFORE writing it, same as step 6 does for `.worktrees/`: this repo's own `.claude/.gitignore` carries the entry, but another repo running this flow needs its own (`.git/info/exclude` — local, uncommitted, same mechanism step 6 uses — is safer than a tracked `.gitignore` line, since it needs no commit of its own in a repo this session may not otherwise be touching).
 4. If a second, not-yet-startable part exists (e.g. gated on a deploy), create its sub-task too and leave it for its own future intake — it gets its own branch/worktree when picked up.
 
-**Mid-intake (from step 4, before step 6 opens a worktree): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet, but re-run the In-Progress transition — the ordinary case's guarantee that step 2 moves the new key forward still applies here), then step 5 onward.
+**Mid-intake (from step 4, before step 6 runs (now deferred to step 8, ADR 0015)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet, but re-run the In-Progress transition — the ordinary case's guarantee that step 2 moves the new key forward still applies here), then step 5 onward.
 
 Worked example: PROJ-100 (a service's schedule tune) turned out to also require flipping 2 live Grafana alert rules. Split into PROJ-101 (the schedule work, already done — override written on the existing branch) and PROJ-102 (the alert gate flip, gated on deploy — a fresh sub-task, intaken separately later). PROJ-100 became the umbrella, synced per the section above once both land.
 
@@ -165,6 +165,8 @@ python3 "$R/lib/post_tracker_comment.py" "<KEY-or-empty>" "<tmpfile>"
 Announce the result in one line: `Direction: <script's stdout line>` (e.g. `Direction: posted: PROJ-1234` / `Direction: skipped: no ticket key`).
 
 ### 6. Branch and worktree
+
+This procedure no longer runs unconditionally before step 7 — it is invoked from step 8 (ADR 0015), once that step's own gate has answered. In-session: the orchestrator runs it here, live. `spawn_task`: the spawned child runs it, from its own actual location — never using values the orchestrator computed, since the child's location is not predictable from here.
 
 Branch name: `<type>/<jira-key-lowercase>-<short-desc>` with a ticket key (e.g. `feat/proj-1234-topn-by-maxrank`), `<type>/<short-desc>` without. `<type>` ∈ `feat|fix|chore|refactor|docs|test|perf`; `<short-desc>` = 3-6 hyphenated lowercase tokens.
 
@@ -295,13 +297,13 @@ Assert before any edit/test/commit:
 git -C "<repo>/.worktrees/<name>" rev-parse --show-toplevel   # MUST equal the worktree abs path
 ```
 
-**Uncommitted artifacts on the base branch** (grill-me wrote docs in steps 3-4): carry them into the worktree via a throwaway commit on a detached HEAD, never the shared stash stack — do NOT branch in-place.
+On this run's own row 1 or row 2 (a normal `git worktree add`, artifacts landing elsewhere — see the table above), the calling step-8 branch already built the carry commit before invoking this procedure — cherry-pick its `<carry-sha>` into this worktree now (`lib/worktree-carry.md`'s `cherry-pick -n`/`reset --quiet` steps, right where that file's own phase-marker comment says to resume). On row 3, there is normally nothing to cherry-pick — the artifacts already live in the tree being adopted. Exception: a `spawn_task` child is *always* row 3 from its own perspective (ADR 0015) regardless of what its orchestrator's own row was — if that orchestrator's row was 1/2, it built a carry commit and passed `<carry-sha>` in the spawn prompt, and this row-3 run must still cherry-pick it (`lib/handoff-spawn.md`'s own instruction). "Nothing to cherry-pick" means no `<carry-sha>` was supplied, not merely "this run resolved to row 3."
 
 > Carry commands + full EnterWorktree ban rationale: `lib/worktree-carry.md` — load when creating a worktree or carrying artifacts.
 
 ### 7. Detailed plan
 
-Invoke `simo-dev:plan-write` (in the worktree) with the gathered context. Plan path: `docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md` (no ticket → drop the key segment). Create `docs/plans/` if missing.
+Invoke `simo-dev:plan-write` (on the current checkout — no worktree exists yet; step 6 runs later, from step 8) with the gathered context. Plan path: `docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md` (no ticket → drop the key segment). Create `docs/plans/` if missing.
 
 ### 7.5. Plan review gate (always-on)
 
@@ -309,8 +311,9 @@ Second structural check-point — last chance before implementation. **Read the 
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files
+python3 "$R/lib/check_base_freshness.py" --repo "<repo>" --plan-files
 ```
+This still compares the local `<base>` against `origin/<base>`, not against `HEAD` — a stale local base still surfaces a real overlap here exactly as before; only the worktree-local divergence this same check would also catch after step 6 runs is no longer available at this point (that guard now runs per-task/per-commit instead, in `plan-execute` and `commit` step 0.5, unaffected by this change).
 
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary.
@@ -336,7 +339,7 @@ Empty (only reached via the explicit `none` sentinel now) → no dispatch. Non-e
 
 Round 1 is the initial dispatch just above. After applying a round's objective fixes, re-read the plan file from disk (never the pre-fix content still sitting in context) and re-dispatch `plan-reviewer` on it — same model, same call shape, prompt built the same way as round 1: from the freshly re-read file, not from memory. Repeat classify → autofix → re-review for up to 3 rounds total. On round 3, stop auto-applying: any remaining objective findings fall through to the gate as judgment findings instead, tagged `(autofix cap reached)` in the `⚠ Plan critique` list — this bounds the loop if the reviewer keeps surfacing new objective findings every round.
 
-Carry judgment findings forward cumulatively across rounds — each re-dispatch is a stateless call with no memory of earlier rounds, so a judgment finding from round 1 that round 2's dispatch doesn't re-surface (new objective findings crowding it out, or plain non-determinism) must still reach the gate. Keep a **gate findings set**: every judgment finding seen across all rounds, deduped by location, plus (round 3 only) any objective findings the cap pushed there. This set — not any single round's raw output — is what both the `⚠ Plan critique` list below and the `Recommended: edit` count reference.
+Carry judgment findings forward cumulatively across rounds — each re-dispatch is a stateless call with no memory of earlier rounds, so a judgment finding from round 1 that round 2's dispatch doesn't re-surface (new objective findings crowding it out, or plain non-determinism) must still reach the gate. Keep a **gate findings set**: every judgment finding seen across all rounds, deduped by the **(location, message) pair** — never by location alone, since a location is a single string (a task or a file reference) and `plan-reviewer`'s independent check categories can legitimately raise two distinct findings against the same one — plus (round 3 only) any objective findings the cap pushed there. On a genuine (location, message) match across rounds, keep the `(autofix cap reached)` tag if any colliding occurrence carries it — a merge must never silently drop it. Exact-string match only: a differently-worded restatement of the same finding across rounds is not deduped by this rule and can surface as a separate entry — accepted, to keep the check simple. This set — not any single round's raw output — is what both the `⚠ Plan critique` list below and the `Recommended: edit` count reference.
 
 If any autofix round ran above, re-read the plan file from disk again — the summary below must reflect the post-autofix content, never the pre-fix version still sitting in context.
 
@@ -373,14 +376,44 @@ Announce `Plan: <script's stdout line>`.
 
 Discipline: `simo-dev:tdd` (default for feature/fix) + `simo-dev:debug` on unexpected red.
 
+**Derive the branch name now, before the pre-gate check below needs it.** `<type>/<jira-key-lowercase>-<short-desc>` (or `<type>/<short-desc>` without a ticket) — step 6's own naming rule (see its heading), a pure string computation from context already gathered by steps 1–5 (task type, ticket key, a short slug), needing no git operation and no worktree. This changes *when* the name is decided, not step 6's own naming rule — step 6 itself (whichever row it resolves to, once it runs) consumes this exact string rather than re-deriving it, and so does everything below in this step, including the pre-gate check.
+
+**Pre-gate eligibility check — run before the handoff gate below.** Two conditions both route straight to the In-session row, skipping the rest of this gate (including its `y`/`n` question) entirely:
+
+1. **Follow-up on an existing branch.** Check whether this run's target branch (the name just derived above) already exists remotely — `git ls-remote --exit-code origin "<branch>"` (the same check step 6's own "Follow-up on an EXISTING branch/MR" section already does; exit 2 → branch doesn't exist, this is a new branch — condition does not fire). Exists (any other exit/non-empty output) → `spawn_task` has no working path for a follow-up (row 3's adopt-rename step only renames onto a name that doesn't already exist elsewhere — a pre-existing gap in step 6, not fixed here).
+2. **This session is itself already sitting in a linked worktree that step 6's own table would resolve to row 3 or row 4** (reuse step 3's pre-flight literals already computed earlier this run — the same table `### 6. Branch and worktree` documents: harness path → row 3; anything else linked and non-canonical → row 4). On row 3, this session's own uncommitted artifacts live inside a tree step 6 is about to move/rename in place — there is no separate base-branch state to hand a spawned child, and no clean way to build a carry commit from a typically-detached HEAD (`worktree-carry.md`'s own first command, `symbolic-ref --short HEAD`, would refuse). Row 4 stops regardless of hand-off path. **Row 1 and row 2 are the only rows this gate's `spawn_task` option is offered for.**
+
+Either condition → announce which one fired, in one line, and proceed directly to the In-session row below (no `y`/`n` asked). Neither condition → proceed to the gate exactly as below.
+
+**Handoff gate — check before the table below.** Recompute step 7.5's own two counts from the plan file just approved (task count from `### Task N` headings, deduped file count from the "Files touched" list) — do not assume they survived from step 7.5's own call; conversational derivations do not carry reliably across many turns. The gate fires when EITHER holds: task count > 5 or file count > 8 (step 7.5's own "large" test, same numbers); OR this session escalated to `simo-dev:grill-me` in **design mode** (not decisions mode) earlier in this task-intake run — a fact this session already knows about itself, nothing to compute or persist.
+
+`mcp__ccd_session__spawn_task` not available → skip this gate silently, fall straight to the table below — same fallback its own rows already use.
+
+Neither signal present → skip straight to the table below, unchanged.
+
+Either signal present → print the block below, then stop and wait for `y`/`n` — this is a blocking gate, not a mention-and-proceed suggestion:
+
+```
+Recommended: spawn_task — <reason(s)>
+Hand off to a fresh session for execution?
+- y — spawn_task, cwd = repo root (this session can be archived)
+- n — continue in-session with worktree discipline
+```
+
+`<reason(s)>` = `plan has <n> tasks across <m> files` when only the large-plan signal fired, `this session ran grill-me (design mode)` when only that signal fired, or both joined with `and` when both fired.
+
+`y` → the spawn_task row below. `n` → the In-session worktree row below. Once this prompt has fired, the table's own silent pick is never reached — the table stays reachable only via the "neither signal" branch above.
+
+`simo-dev:afk` never reaches this gate: its own step 8 override (`Intake step 8 → forced in-session. Never a session-spawn follow-up.`, `skills/afk/SKILL.md:87`) already forces in-session before this point runs.
+
 | Profile | Mode |
 |---|---|
 | Plan-only / single edit / exploration | **In-session** with worktree discipline |
-| Multi-step / verbose / context-heavy | **`spawn_task`**, cwd = worktree (preferred) |
+| Multi-step / verbose / context-heavy | **`spawn_task`**, cwd = repo root (preferred) |
 | Independent parallel sub-investigations | **parallel `Agent`** calls, not spawn |
 
-- **In-session worktree**: continue here + `simo-dev:plan-execute`; Bash cwd does NOT follow the worktree — `git -C "<worktree-abs>"` + absolute paths for everything. State the worktree path and this rule. More than a couple of edits → prefer spawn_task (its cwd is set at launch), where `mcp__ccd_session__spawn_task` is available — not available → this row is the fallback, use it regardless of edit count.
-- **spawn_task**: if `mcp__ccd_session__spawn_task` is available, invoke it with cwd = worktree. Field detail: `lib/handoff-spawn.md` — load when building the call. After the spawn, tell the user to click the chip; this session can be archived. Not available → fall back to the In-session worktree row above.
+- **In-session worktree**: classify against step 6's own table *conditions only* (no action yet) — reuse step 3's pre-flight literals already computed earlier this run. On a row 1 or row 2 classification, build the carry commit first (`lib/worktree-carry.md`'s mechanism, `<repo>` = step 3's own `<TOP>` — equal to `<REAL>` on row 1 — through the `<pre-sha>`/`<carry-sha>` capture and the `switch` back, stopping at that file's own phase-marker comment). Then run step 6's own procedure in full (whichever row it resolves to — this reclassification is authoritative, the one above was only to decide whether to carry first). Then — row 1/2 only — resume at `worktree-carry.md`'s `cherry-pick -n <carry-sha>` + `reset --quiet` line, `<repo>` rebound to the worktree step 6 just created — `<REAL>/.worktrees/<name>` on both row 1 and row 2 (step 6's own table uses `<REAL>` for both destinations; `<TOP>` was only row 2's carry *source*, never the destination) — step 6 itself, not this bullet, confirms the exact path. Row 3/4: skip the cherry-pick, nothing to carry. Only then continue with `simo-dev:plan-execute`; Bash cwd does NOT follow the worktree — `git -C "<worktree-abs>"` + absolute paths for everything. State the worktree path and this rule. More than a couple of edits → prefer spawn_task (its cwd is set at launch), where `mcp__ccd_session__spawn_task` is available — not available → this row is the fallback, use it regardless of edit count.
+- **spawn_task**: if `mcp__ccd_session__spawn_task` is available, only reached when the pre-gate eligibility check above found neither condition (new branch, and this session's own row is 1 or 2). Invoke it with `cwd` = the repo root (`<REAL>` — the main checkout). On this session's own row 1/2 (same classify-only-first reuse as the In-session row), build the carry commit first, same mechanism, `<repo>` = `<TOP>`. The prompt (`lib/handoff-spawn.md`) must NOT carry this session's step 3 values — the child's harness worktree sits somewhere this session cannot predict, so the child runs step 3 itself. It only needs the branch name and `<base>`, plus — row 1/2 only — `<carry-sha>`. Print `<carry-sha>` (when built) and its one-line recovery pointer (`git -C <repo> cherry-pick -n <carry-sha>` from the base checkout) in this session's own output before spawning, so a chip never clicked or a failed child doesn't leave it unrecoverable-looking. Field detail: `lib/handoff-spawn.md` — load when building the call. After the spawn, tell the user to click the chip; this session can be archived. Not available → fall back to the In-session worktree row above.
 - **Parallel agents**: `Agent` tool with `subagent_type`, for research/analysis splits, not code-writing.
 
 ## Notes

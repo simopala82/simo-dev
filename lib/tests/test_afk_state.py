@@ -1,5 +1,6 @@
 """Tests for lib/afk_state.py (per-(repo+branch) AFK liveness state)."""
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -47,8 +48,8 @@ def state(tmp_path, monkeypatch):
     f = tmp_path / "afk"
     monkeypatch.setenv("AFK_STATE_FILE", str(f))
     monkeypatch.setattr(afk, "_now", lambda: float(NOW))
-    monkeypatch.setattr(afk, "repo_id", lambda: "gitlab.example/team/repo-a")
-    monkeypatch.setattr(afk, "current_branch", lambda: "master")
+    monkeypatch.setattr(afk, "repo_id", lambda repo=None: "gitlab.example/team/repo-a")
+    monkeypatch.setattr(afk, "current_branch", lambda repo=None: "master")
     return f
 
 
@@ -156,3 +157,95 @@ def test_main_dispatch(state):
     assert afk.main(["stop"]) == 0
     assert afk.main(["is-stopped"]) == 0
     assert afk.main(["status"]) == 0
+
+
+def test_arm_with_explicit_repo_threads_path_to_identity_calls(state, monkeypatch):
+    seen = {}
+
+    def fake_repo_id(repo=None):
+        seen["repo_id_arg"] = repo
+        return "gitlab.example/team/repo-a"
+
+    def fake_current_branch(repo=None):
+        seen["current_branch_arg"] = repo
+        return "master"
+
+    monkeypatch.setattr(afk, "repo_id", fake_repo_id)
+    monkeypatch.setattr(afk, "current_branch", fake_current_branch)
+    assert afk.arm(repo="/some/worktree") == 0
+    assert seen["repo_id_arg"] == "/some/worktree"
+    assert seen["current_branch_arg"] == "/some/worktree"
+
+
+def test_arm_without_repo_arg_passes_none_to_identity_calls(state, monkeypatch):
+    seen = {}
+
+    def fake_repo_id(repo=None):
+        seen["repo_id_arg"] = repo
+        return "gitlab.example/team/repo-a"
+
+    monkeypatch.setattr(afk, "repo_id", fake_repo_id)
+    assert afk.arm() == 0
+    assert seen["repo_id_arg"] is None
+
+
+def test_main_dispatch_forwards_repo_flag(state, monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_repo_id(repo=None):
+        seen["repo_id_arg"] = repo
+        return "gitlab.example/team/repo-a"
+
+    monkeypatch.setattr(afk, "repo_id", fake_repo_id)
+    repo_dir = str(tmp_path)
+    assert afk.main(["arm", "--repo", repo_dir]) == 0
+    assert seen["repo_id_arg"] == repo_dir
+
+
+def test_main_dispatch_without_repo_flag_passes_none(state, monkeypatch):
+    seen = {}
+
+    def fake_repo_id(repo=None):
+        seen["repo_id_arg"] = repo
+        return "gitlab.example/team/repo-a"
+
+    monkeypatch.setattr(afk, "repo_id", fake_repo_id)
+    assert afk.main(["arm"]) == 0
+    assert seen["repo_id_arg"] is None
+
+
+def test_main_rejects_nonexistent_repo_path(state):
+    with pytest.raises(SystemExit) as exc_info:
+        afk.main(["is-stopped", "--repo", "/definitely/not/a/real/path"])
+    assert exc_info.value.code == 2
+
+
+def test_main_rejects_repo_that_is_not_a_git_repository(tmp_path, capsys):
+    # a real, existing directory that is not a git repo — repo_identity's own
+    # sys.exit("not inside a git repository") must be remapped to rc=2, not left
+    # at rc=1 (indistinguishable from is-stopped's legitimate "absent" answer).
+    # Also pins the forwarded message text (via stderr — argparse's parser.error
+    # prints the message and exits with a bare int code, not a message-bearing
+    # SystemExit), not just the exit code — a regression to a fixed message
+    # here would silently mask the real cause.
+    with pytest.raises(SystemExit) as exc_info:
+        afk.main(["is-stopped", "--repo", str(tmp_path)])
+    assert exc_info.value.code == 2
+    assert "not inside a git repository" in capsys.readouterr().err
+
+
+def test_main_reports_detached_head_as_the_real_cause_not_missing_repo(tmp_path, capsys):
+    # a real, valid git repo on a detached HEAD raises a DIFFERENT
+    # repo_identity SystemExit ("no current branch") than the not-a-git-repo
+    # case above — the forwarded message must say so, not the fixed
+    # "not a git repository" string a prior iteration used.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"],
+        cwd=tmp_path, check=True,
+    )
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=tmp_path, check=True)
+    with pytest.raises(SystemExit) as exc_info:
+        afk.main(["is-stopped", "--repo", str(tmp_path)])
+    assert exc_info.value.code == 2
+    assert "no current branch" in capsys.readouterr().err

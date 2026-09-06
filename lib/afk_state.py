@@ -24,11 +24,14 @@ States:
   absent   no entry — never armed, or expired/purged.
 
 Usage:
-    afk_state.py arm          # mark current repo+branch active (refresh epoch)
-    afk_state.py stop         # mark current repo+branch stopped (tombstone)
-    afk_state.py is-stopped   # exit 0 iff current repo+branch is stopped
-    afk_state.py is-active    # exit 0 iff current repo+branch is active
-    afk_state.py status       # print active|stopped|absent for current repo+branch
+    afk_state.py arm          [--repo PATH]  # mark repo+branch active (refresh epoch)
+    afk_state.py stop         [--repo PATH]  # mark repo+branch stopped (tombstone)
+    afk_state.py is-stopped   [--repo PATH]  # exit 0 iff repo+branch is stopped
+    afk_state.py is-active    [--repo PATH]  # exit 0 iff repo+branch is active
+    afk_state.py status       [--repo PATH]  # print active|stopped|absent for repo+branch
+
+--repo resolves identity from PATH instead of the ambient process cwd (worktree-safe).
+Omitted --repo: behavior is unchanged (resolves from the ambient cwd).
 """
 from __future__ import annotations
 
@@ -90,9 +93,9 @@ def _state_of(rid: str, branch: str, now: float) -> str:
     return "absent"
 
 
-def _set_state(state: str) -> int:
+def _set_state(state: str, repo: str | None = None) -> int:
     now = _now()
-    rid, branch = repo_id(), current_branch()
+    rid, branch = repo_id(repo), current_branch(repo)
     entries = [e for e in _live_entries(now) if (e[0], e[1]) != (rid, branch)]
     entries.append((rid, branch, state, int(now)))
     _write(entries)
@@ -100,25 +103,25 @@ def _set_state(state: str) -> int:
     return 0
 
 
-def arm() -> int:
-    return _set_state("active")
+def arm(repo: str | None = None) -> int:
+    return _set_state("active", repo)
 
 
-def stop() -> int:
-    return _set_state("stopped")
+def stop(repo: str | None = None) -> int:
+    return _set_state("stopped", repo)
 
 
-def status() -> int:
-    print(_state_of(repo_id(), current_branch(), _now()))
+def status(repo: str | None = None) -> int:
+    print(_state_of(repo_id(repo), current_branch(repo), _now()))
     return 0
 
 
-def is_stopped() -> int:
-    return 0 if _state_of(repo_id(), current_branch(), _now()) == "stopped" else 1
+def is_stopped(repo: str | None = None) -> int:
+    return 0 if _state_of(repo_id(repo), current_branch(repo), _now()) == "stopped" else 1
 
 
-def is_active() -> int:
-    return 0 if _state_of(repo_id(), current_branch(), _now()) == "active" else 1
+def is_active(repo: str | None = None) -> int:
+    return 0 if _state_of(repo_id(repo), current_branch(repo), _now()) == "active" else 1
 
 
 _DISPATCH = {"arm": arm, "stop": stop, "status": status, "is-stopped": is_stopped, "is-active": is_active}
@@ -128,9 +131,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in _DISPATCH:
-        sub.add_parser(name)
+        p = sub.add_parser(name)
+        p.add_argument("--repo", default=None, help="resolve repo-id/branch from this path instead of the ambient cwd")
     args = parser.parse_args(argv)
-    return _DISPATCH[args.cmd]()
+    if args.repo is not None and not Path(args.repo).is_dir():
+        parser.error(f"--repo: not a directory: {args.repo}")
+    try:
+        return _DISPATCH[args.cmd](args.repo)
+    except SystemExit as e:
+        if args.repo is not None:
+            parser.error(f"--repo {args.repo}: {e}")
+        raise
 
 
 if __name__ == "__main__":
