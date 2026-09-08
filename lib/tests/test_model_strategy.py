@@ -82,3 +82,9 @@ def test_config_path_env_override(monkeypatch, tmp_path):
 def test_config_path_default_no_override(monkeypatch):
     monkeypatch.delenv("SIMO_DEV_MODEL_STRATEGY_CONFIG", raising=False)
     assert ms.config_path() == Path.home() / ".claude" / "simo-dev" / "model-strategy.json"
+
+
+def test_plan_execute_is_a_valid_category(tmp_path):
+    path = tmp_path / "model-strategy.json"
+    ms.set_value("plan_execute", "opus", path)
+    assert ms.get_value("plan_execute", path) == "opus"

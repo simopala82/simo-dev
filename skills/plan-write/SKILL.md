@@ -38,6 +38,17 @@ Logged in the author's own claim-hygiene notes (keep a similar file if you have 
 
 A task is the smallest unit with its own test/verify cycle — it ends with an independently verifiable deliverable. Each step is one action (2-5 min).
 
+Nesting: `Global Constraints` above is `##`; every `Task N` heading nests one level below it, at `###` — never `##`, which makes the task a sibling of `Global Constraints` instead of a child of it. Combined, the two templates read:
+
+```markdown
+## Global Constraints
+[...]
+---
+
+### Task 1: [Component]
+...
+```
+
 ```markdown
 ### Task N: [Component]
 
@@ -93,6 +104,8 @@ Run yourself, fix inline:
 1. **Spec coverage** — every requirement maps to a task; list gaps and add tasks.
 2. **Placeholder scan** — search the plan for the patterns above.
 3. **Cross-task consistency** — names, signatures, and types used in later tasks match their definitions in earlier tasks.
+4. **Task header level** — every `Task N` heading matches `### Task N:` (see "Task shape" above), never `## Task N:`; fix any mismatch before presenting the plan.
+5. **Literal-wording scan** — for each prose block (per the `## Prose targets: anchor and outcome, never the final wording` rule's own "Classification is per *block*, not per file" clause), check that it cites an anchor and an outcome instead of pasting the final wording — a before/after or "becomes:" style block.
 
 ## Plan critique and review gate
 
@@ -122,8 +135,8 @@ Empty (only reached via the explicit `none` sentinel now) → no dispatch. Non-e
 
 **Auto-apply objective findings, before the gate is shown.** Classify each parsed finding:
 
-- **Objective** — severity `critical`/`high` AND the finding names a mechanically verifiable plan defect: a wrong anchor/reference, a non-executable command, a dead/unused variable, an empty assertion, and similar. Fix it with a targeted `Edit` to the plan file, right here — do not wait for an `edit` at the gate below, and never a full `plan-write` regeneration for these (that scope belongs to judgment findings, where the human sees and approves the resulting diff).
-- **Judgment** — anything else: severity `medium`/`low`, or the finding argues for an alternative direction, scope, or design choice. This escape hatch overrides severity — a `critical`-tagged design objection is still judgment, never auto-applied. Judgment findings wait for the user at the gate, unchanged from today.
+- **Objective** — severity `critical`/`high`/`medium` AND the finding names a mechanically verifiable plan defect: a wrong anchor/reference, a non-executable command, a dead/unused variable, an empty assertion, and similar. Fix it with a targeted `Edit` to the plan file, right here — do not wait for an `edit` at the gate below, and never a full `plan-write` regeneration for these (that scope belongs to judgment findings, where the human sees and approves the resulting diff).
+- **Judgment** — anything else: severity `low`, or the finding argues for an alternative direction, scope, or design choice, or otherwise needs the user's own decision rather than a mechanical fix. This escape hatch overrides severity — a `critical`- or `medium`-tagged design objection is still judgment, never auto-applied. Judgment findings wait for the user at the gate, unchanged from today.
 
 Round 1 is the initial dispatch just above. After applying a round's objective fixes, re-read the plan file from disk (never the pre-fix content still sitting in context) and re-dispatch `plan-reviewer` on it — same model, same call shape, prompt built the same way as round 1: from the freshly re-read file, not from memory. Repeat classify → autofix → re-review for up to 3 rounds total. On round 3, stop auto-applying: any remaining objective findings fall through to the gate as judgment findings instead, tagged `(autofix cap reached)` in the `⚠ Plan critique` list — this bounds the loop if the reviewer keeps surfacing new objective findings every round.
 

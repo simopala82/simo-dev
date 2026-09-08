@@ -217,7 +217,7 @@ Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task
 - **`mr-review`** — fully standalone, read-only review of *someone else's* MR/PR. Never writes to GitLab/GitHub, never touches the issue tracker, not part of the chain.
 - **`spawn-task`** — generic background-session spawn wrapper, used by `task-intake`'s hand-off (and available on demand).
 - **`onboard-repo`** — detects and scaffolds simo-dev's per-repo conventions (CLAUDE.md's Agent skills section, issue tracker, domain docs) in a target repo; exempt from `task-intake`'s mandatory entry like `spawn-task`.
-- **`model-strategy`** — view/change which model backs each of the plugin's own `Agent` dispatch points (`code_review`, `plan_critique`, `explore_research`); exempt from `task-intake`'s mandatory entry, same class as `onboard-repo`. See "Model strategy" in [`docs/canonical-flow.md`](docs/canonical-flow.md).
+- **`model-strategy`** — view/change which model backs each of the plugin's own `Agent` dispatch points (`code_review`, `plan_critique`, `explore_research`, `plan_execute`); exempt from `task-intake`'s mandatory entry, same class as `onboard-repo`. See "Model strategy" in [`docs/canonical-flow.md`](docs/canonical-flow.md).
 
 ## Skill reference
 
@@ -233,7 +233,7 @@ Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task
 | `spawn-task` | Wraps background-session spawning with inferred title/prompt/tldr | "spawn this", or invoked internally by other skills | none (utility) |
 | `guide` | Flow conventions: the chain, gate rules, ticket marker, publish path | On demand — worktree policy and the other eager rules live in the installer's `CLAUDE.md` | none (reference doc) |
 | `onboard-repo` | Detects and scaffolds simo-dev's per-repo conventions (CLAUDE.md Agent skills section, issue tracker, domain docs) in a target repo | "onboard this repo" | none (utility) |
-| `model-strategy` | View/change which model backs `code_review`, `plan_critique`, `explore_research` dispatch | "model strategy" | none (utility) |
+| `model-strategy` | View/change which model backs `code_review`, `plan_critique`, `explore_research`, `plan_execute` dispatch | "model strategy" | none (utility) |
 
 Bundled discipline skills (invoked by the chain, no external plugin needed): `plan-write`, `plan-execute`, `tdd`, `debug`, `verify-done`, `code-review-protocol`, plus the `code-reviewer` and `plan-reviewer` agents.
 

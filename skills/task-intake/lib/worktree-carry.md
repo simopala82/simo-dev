@@ -8,6 +8,16 @@ This mechanism carries base-branch artifacts (`CONTEXT.md`, `docs/adr/**`, `docs
 
 Not via the stash: `refs/stash` is ONE stack shared by every worktree of the repo, and this carry crosses two of them, so a `push` here and a `pop` there can pair with somebody else's entry — both at rc 0 (logged in the author's own notes, §17 — worth keeping a similar log). A throwaway commit on a **detached** HEAD keeps the base branch ref still, and the two worktrees share the object database, which is what makes `<carry-sha>` readable from the new one. Not `lib/park_and_rebase.py` either: that parks and restores inside one worktree — its record lives in that worktree's git dir — and never moves work to another tree.
 
+**Before running the block below, confirm every path is yours (observed 2026-09-08: a concurrent session's own untracked plan file sat in `docs/plans/` alongside this session's) — this is a separate, preceding check, not one of the six/three lines counted below.** The targeted add in the block below stages every untracked/modified file under the four watched directories, regardless of which session created it. Git state does not record which session created a file, so this is a manual, operator-read check:
+
+```bash
+git -C "<repo>" status --porcelain -uall -- CONTEXT.md docs/adr docs/specs docs/plans
+```
+
+Read every listed path (`-uall` is required — the default `--untracked-files=normal` collapses a wholly-untracked directory to a single `?? docs/specs/` line, hiding exactly the per-file list this check needs; measured 2026-09-08, git 2.55.0). Nothing listed is yours → skip the block below entirely; the outcome is identical to that block's own `<carry-sha>` EQUAL `<pre-sha>` case (documented below as "nothing was carried") — nothing to supply either way (matching `SKILL.md`'s own "no `<carry-sha>` was supplied" vocabulary for this case), so there is nothing to cherry-pick-resume later and nothing to print or pass to a `spawn_task` child. Anything listed that you did not create this session → in the copy of the block you paste into the Bash call (never edit the file itself), substitute your own confirmed path(s) for the `-- CONTEXT.md docs/adr docs/specs docs/plans` pathspec on **both** of its two FILES-computing lines (the `diff --name-only` line and the `ls-files --others` line) — the rest of the block runs unmodified, the six-line fail-closed guarantees and the `<pre-sha>`/`<carry-sha>` guard included, and the other session's file is never added, never moved, never touched. This also covers a file of your own that is a *modified tracked* file (e.g. `CONTEXT.md`), which `mv` would carry only by leaving a deletion behind in the base checkout.
+
+Making this mechanism session-aware (a lock file or timestamp tracking which session created which untracked file) is out of scope: the check above already covers the one incident observed so far (2026-09-08), and a classification mechanism for a rare case is not justified — see this plugin's own `CONTRIBUTING.md`, "*classifies* inputs into categories is not [cheap]".
+
 ```bash
 git -C "<repo>" symbolic-ref --short HEAD || { echo "STOP: detached base checkout"; exit 1; }   # <basebranch>
 git -C "<repo>" fetch origin <base> --quiet || { echo "STOP: fetch failed, a stale origin/<base> would ship"; exit 1; }

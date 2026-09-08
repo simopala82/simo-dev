@@ -16,6 +16,7 @@ Never mutate the working tree, the index, HEAD, or branch state. Read the plan f
 - **Cross-task consistency** — names, signatures, and types a later task consumes must match what an earlier task's Interfaces/Produces actually defines.
 - **File-scoping correctness** — each task's declared `Files:` targets are either real existing paths (for `Modify`/`Test`) or clearly new (for `Create`); no task silently touches a file outside its own declared list.
 - **Anchor correctness** — for a prose-editing task, its cited anchor (heading, option name, command, symbol) must identify a real, stable location in the target file, not a whole sentence that will age under the next rewording, and not a vague description with nothing to grep for.
+- **Literal-wording violations** — flag any prose block (judged by content, not by what its task's `Files:` entry names — per `plan-write/SKILL.md`'s own "Classification is per *block*, not per file" clause) whose step text pastes literal final wording — a before/after or "becomes:" style block — instead of citing an anchor plus the required outcome. This is the same violation `plan-write/SKILL.md`'s own "Prose targets: anchor and outcome, never the final wording" rule already forbids — flag it as plan noncompliance with that pre-existing rule, not as a new rule of your own. Severity `high` — the pasted literal text can carry a stale or dangling reference that ships verbatim.
 
 ## Calibration
 

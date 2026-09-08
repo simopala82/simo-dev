@@ -16,7 +16,7 @@ Usage:
     model_strategy.py get <CATEGORY> [--config PATH]
     model_strategy.py set <CATEGORY> <VALUE> [--config PATH]
 
-CATEGORY is one of: code_review, plan_critique, explore_research.
+CATEGORY is one of: code_review, plan_critique, explore_research, plan_execute.
 
 `get` prints the configured model name (empty string if the category
 is not configured) and always exits 0 on a well-formed config -- an
@@ -28,7 +28,7 @@ strings, it does not know or enforce any default.
 
 `set` rejects a category outside the fixed whitelist above (exit 2).
 Unlike tracker_config.py's per-prefix fields, there is no per-user
-extension point here: the three categories are the three places this
+extension point here: the four categories are the four places this
 plugin actually dispatches an Agent with a configurable model.
 
 Exit codes:
@@ -46,7 +46,7 @@ import os
 import sys
 from pathlib import Path
 
-CATEGORIES = ("code_review", "plan_critique", "explore_research")
+CATEGORIES = ("code_review", "plan_critique", "explore_research", "plan_execute")
 
 
 def config_path() -> Path:

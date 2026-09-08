@@ -2,8 +2,9 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""pytest port of hooks/test_review_record.sh (cases 1-13; case 14's settings.json
-registration check is covered by Task 7's verification instead)."""
+"""pytest port of the now-deleted hooks/test_review_record.sh (removed in c0d0234f,
+the same commit that added this file); cases 1-13 are ported here. Case 14, the
+settings.json hook-registration check, has no pytest counterpart in this file."""
 import json
 import subprocess
 import sys

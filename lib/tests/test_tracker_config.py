@@ -231,3 +231,10 @@ def test_link_cmd_roundtrip(tmp_path):
     path = tmp_path / "tracker.json"
     tc.set_field("CUS", "link_cmd", "python3 /x/jira_link.py", path)
     assert tc.get_field("CUS", "link_cmd", path) == "python3 /x/jira_link.py"
+
+
+def test_assign_cmd_roundtrip(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    assert tc.main(["set", "CUS", "assign_cmd", "python3 /x/jira_assign.py", "--config", str(path)]) == 0
+    assert tc.main(["get", "CUS", "assign_cmd", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == "python3 /x/jira_assign.py"

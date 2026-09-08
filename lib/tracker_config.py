@@ -18,7 +18,7 @@ Usage:
     tracker_config.py run [--config PATH] <PREFIX> <FIELD> [ARGS...]
 
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
-supports_subtasks, post_merge_state, scope_fetch_cmd, comment_cmd, link_cmd.
+supports_subtasks, post_merge_state, scope_fetch_cmd, comment_cmd, link_cmd, assign_cmd.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -55,6 +55,17 @@ with:
     tracker_config.py set <PREFIX> link_cmd "python3 <path to jira_link.py>"
 
 Same source-working-tree-path rule as comment_cmd above.
+
+assign_cmd is invoked as `<CMD> <key>` (a single ticket key, no other args) and
+must assign the ticket to whatever user the configured command itself resolves
+as "current", exiting 0 on success (already assigned to that user counts as
+success — idempotent, not an error). simo-dev:task-intake step 5.6 is the sole
+consumer, best-effort like transition_cmd. private/jira_assign.py (a sibling
+task in this same plan) implements this contract for JIRA — configure with:
+
+    tracker_config.py set <PREFIX> assign_cmd "python3 <path to jira_assign.py>"
+
+Same source-working-tree-path rule as the fields above it.
 
 `get` prints the value (empty string if the prefix/field is not
 configured) and always exits 0 on a well-formed config — an absent entry
@@ -108,6 +119,7 @@ FIELDS = (
     "scope_fetch_cmd",
     "comment_cmd",
     "link_cmd",
+    "assign_cmd",
 )
 
 

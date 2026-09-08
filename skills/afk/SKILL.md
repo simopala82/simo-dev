@@ -77,14 +77,14 @@ Then run forward to the park point.
 While AFK is active, auto-answer every gate and **append each answer to the decision-log**:
 
 - **Direction gate** → `y` (recommended direction). If `deep-dive` would be the default, take the recommended candidate instead, log `deep-dive skipped → took recommended <X>`. Never enter brainstorming/grill (they block on the user).
-- **Plan-review gate** → `y`. When plan-write's review gate printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`. When it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line — the gate looks exactly as it does today.
+- **Plan-review gate** → shape-aware (task-intake step 7.5's own gate). On Shape A (no spawn offered — the blockquote has only `y`/`edit <feedback>`/`restart`, no `n` option, and no `Recommended: spawn_task` line above it) → `y`, with the same conditional log line as today: when it printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`; when it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line. On Shape B (recognizable by the `n` option and the `Recommended: spawn_task — ...` line above the gate) → `n` (never `y`, which now means spawn and would trigger the suppressed hand-off in §3) — log `[gate] plan-review (spawn offered) → n (afk never spawns)`.
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
 - **Any other fork with no clear recommendation** → most conservative / most reversible option, logged.
 
 ## 3. Hand-off override
 
-- Intake step 8 → forced **in-session**. Never a session-spawn follow-up.
+- Intake's plan-review gate (task-intake step 7.5) → forced **in-session** via §2's `n` answer whenever the spawn-offered shape appears. Intake step 8's profile/mode table (reached only via the `table-pick` routing, when step 7.5's gate offered no spawn choice at all) → still forced **in-session** regardless of what the table would otherwise silently pick for a "Multi-step / verbose / context-heavy" plan; afk never lets the table's own `spawn_task` pick stand. Never a session-spawn follow-up, through either path.
 - Any session-spawn follow-up the flow would fire → suppressed, logged 🔖 `deferred spawn: <title> — accept manually after review`.
 - Allowed: parallel-`Agent` (`subagent_type`), background `Agent`/`Bash` (`run_in_background: true`) — except a `simo-dev:code-reviewer` dispatch, always `run_in_background: false` (`simo-dev:code-review-protocol` item 2).
 
