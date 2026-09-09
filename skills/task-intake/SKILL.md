@@ -54,7 +54,7 @@ The signals above can surface after intake ends — typically during `simo-dev:c
 3. **Point this branch's flow at the sub-task, without renaming an already-pushed branch**: write the sub-task key to `.claude/ticket-key-override` in the worktree root (single line, e.g. `PROJ-1994`) — `derive_ticket_key.py` reads it before falling back to the branch-derived key, so every later transition in this session (commit, mr-followup) targets the sub-task automatically. Worktree-local and untracked; never commit it — check `.claude/ticket-key-override` is gitignored in this repo BEFORE writing it, same as step 6 does for `.worktrees/`: this repo's own `.claude/.gitignore` carries the entry, but another repo running this flow needs its own (`.git/info/exclude` — local, uncommitted, same mechanism step 6 uses — is safer than a tracked `.gitignore` line, since it needs no commit of its own in a repo this session may not otherwise be touching).
 4. If a second, not-yet-startable part exists (e.g. gated on a deploy), create its sub-task too and leave it for its own future intake — it gets its own branch/worktree when picked up.
 
-**Mid-intake (from step 4, before step 6 runs (now deferred to step 8, ADR 0015)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet), then step 5 onward — step 5.6 takes the sub-task in charge when reached, no separate re-run needed.
+**Mid-intake (from step 4, before step 6 runs (now deferred to step 8)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet), then step 5 onward — step 5.6 takes the sub-task in charge when reached, no separate re-run needed.
 
 Worked example: PROJ-100 (a service's schedule tune) turned out to also require flipping 2 live Grafana alert rules. Split into PROJ-101 (the schedule work, already done — override written on the existing branch) and PROJ-102 (the alert gate flip, gated on deploy — a fresh sub-task, intaken separately later). PROJ-100 became the umbrella, synced per the section above once both land.
 
@@ -171,7 +171,7 @@ No-op if `assign_cmd`/`transition_cmd` is not configured for the prefix — this
 
 ### 6. Branch and worktree
 
-This procedure no longer runs unconditionally before step 7 — it is invoked from step 8, once step 7.5's gate has decided the hand-off routing (ADR 0015). In-session: the orchestrator runs it here, live. `spawn_task`: the spawned child runs it, from its own actual location — never using values the orchestrator computed, since the child's location is not predictable from here.
+This procedure no longer runs unconditionally before step 7 — it is invoked from step 8, once step 7.5's gate has decided the hand-off routing. In-session: the orchestrator runs it here, live. `spawn_task`: the spawned child runs it, from its own actual location — never using values the orchestrator computed, since the child's location is not predictable from here.
 
 Branch name: `<type>/<jira-key-lowercase>-<short-desc>` with a ticket key (e.g. `feat/proj-1234-topn-by-maxrank`), `<type>/<short-desc>` without. `<type>` ∈ `feat|fix|chore|refactor|docs|test|perf`; `<short-desc>` = 3-6 hyphenated lowercase tokens.
 
@@ -302,7 +302,7 @@ Assert before any edit/test/commit:
 git -C "<repo>/.worktrees/<name>" rev-parse --show-toplevel   # MUST equal the worktree abs path
 ```
 
-On this run's own row 1 or row 2 (a normal `git worktree add`, artifacts landing elsewhere — see the table above), the calling step-8 branch already built the carry commit before invoking this procedure — cherry-pick its `<carry-sha>` into this worktree now (`lib/worktree-carry.md`'s `cherry-pick -n`/`reset --quiet` steps, right where that file's own phase-marker comment says to resume). On row 3, there is normally nothing to cherry-pick — the artifacts already live in the tree being adopted. Exception: a `spawn_task` child is *always* row 3 from its own perspective (ADR 0015) regardless of what its orchestrator's own row was — if that orchestrator's row was 1/2, it built a carry commit and passed `<carry-sha>` in the spawn prompt, and this row-3 run must still cherry-pick it (`lib/handoff-spawn.md`'s own instruction). "Nothing to cherry-pick" means no `<carry-sha>` was supplied, not merely "this run resolved to row 3."
+On this run's own row 1 or row 2 (a normal `git worktree add`, artifacts landing elsewhere — see the table above), the calling step-8 branch already built the carry commit before invoking this procedure — cherry-pick its `<carry-sha>` into this worktree now (`lib/worktree-carry.md`'s `cherry-pick -n`/`reset --quiet` steps, right where that file's own phase-marker comment says to resume). On row 3, there is normally nothing to cherry-pick — the artifacts already live in the tree being adopted. Exception: a `spawn_task` child is *always* row 3 from its own perspective regardless of what its orchestrator's own row was — if that orchestrator's row was 1/2, it built a carry commit and passed `<carry-sha>` in the spawn prompt, and this row-3 run must still cherry-pick it (`lib/handoff-spawn.md`'s own instruction). "Nothing to cherry-pick" means no `<carry-sha>` was supplied, not merely "this run resolved to row 3."
 
 > Carry commands + full EnterWorktree ban rationale: `lib/worktree-carry.md` — load when creating a worktree or carrying artifacts.
 
@@ -323,7 +323,7 @@ This still compares the local `<base>` against `origin/<base>`, not against `HEA
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary.
 
-Then read the `plan_critique` model config — defaults to `fable` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
+Then read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
@@ -331,7 +331,7 @@ PLAN_CRITIQUE_MODEL=$(python3 "$R/lib/model_strategy.py" get plan_critique)
 if [ "$PLAN_CRITIQUE_MODEL" = "none" ]; then
   PLAN_CRITIQUE_MODEL=""
 elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
-  PLAN_CRITIQUE_MODEL="fable"
+  PLAN_CRITIQUE_MODEL="sonnet"
 fi
 ```
 

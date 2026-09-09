@@ -37,7 +37,7 @@ def test_content_as_a_block_list_is_joined(tmp_path):
 
 def test_a_textless_leading_block_cannot_promote_later_text_to_line_1(tmp_path):
     """Blocks join with a newline: a tool_result block must not let the next block's
-    text become line 1, which is the only line allowed to name a repo (ADR 0003)."""
+    text become line 1, which is the only line allowed to name a repo."""
     p = tmp_path / "agent.jsonl"
     p.write_text(json.dumps({
         "type": "user",

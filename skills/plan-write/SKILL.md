@@ -119,7 +119,7 @@ python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary.
 
-Then read the `plan_critique` model config — defaults to `fable` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
+Then read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
@@ -127,7 +127,7 @@ PLAN_CRITIQUE_MODEL=$(python3 "$R/lib/model_strategy.py" get plan_critique)
 if [ "$PLAN_CRITIQUE_MODEL" = "none" ]; then
   PLAN_CRITIQUE_MODEL=""
 elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
-  PLAN_CRITIQUE_MODEL="fable"
+  PLAN_CRITIQUE_MODEL="sonnet"
 fi
 ```
 

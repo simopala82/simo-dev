@@ -1,7 +1,7 @@
 """Tests for the plan_critique default/sentinel bash logic used at
 plan-write SKILL.md's Plan critique and review gate section (the block that resolves PLAN_CRITIQUE_MODEL).
 model_strategy.py itself is unchanged; this snippet is the only place that
-knows plan_critique defaults to "fable" and that "none" disables dispatch."""
+knows plan_critique defaults to "sonnet" and that "none" disables dispatch."""
 import subprocess
 from pathlib import Path
 
@@ -13,7 +13,7 @@ PLAN_CRITIQUE_MODEL=$(python3 "{lib}" get plan_critique --config "{config}")
 if [ "$PLAN_CRITIQUE_MODEL" = "none" ]; then
   PLAN_CRITIQUE_MODEL=""
 elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
-  PLAN_CRITIQUE_MODEL="fable"
+  PLAN_CRITIQUE_MODEL="sonnet"
 fi
 printf '%s' "$PLAN_CRITIQUE_MODEL"
 '''
@@ -27,9 +27,9 @@ def _run_snippet(config_path):
     return result.stdout
 
 
-def test_unconfigured_defaults_to_fable(tmp_path):
+def test_unconfigured_defaults_to_sonnet(tmp_path):
     config = tmp_path / "model-strategy.json"
-    assert _run_snippet(config) == "fable"
+    assert _run_snippet(config) == "sonnet"
 
 
 def test_none_sentinel_disables_dispatch(tmp_path):
@@ -50,19 +50,19 @@ def test_explicit_override_wins(tmp_path):
     assert _run_snippet(config) == "opus"
 
 
-def test_empty_string_reset_also_defaults_to_fable(tmp_path):
+def test_empty_string_reset_also_defaults_to_sonnet(tmp_path):
     config = tmp_path / "model-strategy.json"
     subprocess.run(
         ["python3", str(LIB), "set", "plan_critique", "", "--config", str(config)],
         check=True,
     )
-    assert _run_snippet(config) == "fable"
+    assert _run_snippet(config) == "sonnet"
 
 
-def test_invalid_json_falls_through_to_fable(tmp_path):
+def test_invalid_json_falls_through_to_sonnet(tmp_path):
     config = tmp_path / "model-strategy.json"
     config.write_text("{not json")
-    assert _run_snippet(config) == "fable"
+    assert _run_snippet(config) == "sonnet"
 
 
 def _if_block(lines):

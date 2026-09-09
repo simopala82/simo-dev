@@ -4,7 +4,7 @@
 # ///
 """The `REPO:` marker of an agent transcript — line 1 of its FIRST user message.
 
-Same contract as the prompt-side extraction it replaces (ADR 0003): the marker must be
+Same contract as the prompt-side extraction it replaces: the marker must be
 the whole of line 1, the path must be absolute, and nothing below line 1 is read. The
 source moved from the `Agent` tool_input to the transcript because the record is now
 written on `SubagentStop`, which fires when the reviewer concludes and carries only
@@ -42,7 +42,7 @@ def _text(content: object) -> str:
     snapshot that moves in BOTH directions — transcripts are pruned as well as added — so
     re-measure rather than quoting it (method: docs/adr/0005-*.md).
 
-    Blocks are joined with a NEWLINE, not empty: only line 1 may name a repo (ADR 0003),
+    Blocks are joined with a NEWLINE, not empty: only line 1 may name a repo,
     so a leading block carrying no `text` — a tool_result or an image — must not let the
     next block's text slide up into line 1. Every observed first user message is a plain
     str, so this costs nothing today and fails closed if that ever changes.

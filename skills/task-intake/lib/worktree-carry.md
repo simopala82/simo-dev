@@ -4,7 +4,7 @@ Loaded on demand from `task-intake` step 8's row-1/2 carry and from step 6 itsel
 
 ## Carrying uncommitted artifacts into the worktree
 
-This mechanism carries base-branch artifacts (`CONTEXT.md`, `docs/adr/**`, `docs/specs/**`, `docs/plans/**` — `simo-dev:grill-me` and `simo-dev:plan-write` are the two writers) into a worktree once one exists. It is invoked by `task-intake` step 8's row-1/row-2 branch (see `SKILL.md`) — never by row 3, which has nothing separate to carry (ADR 0015). Do NOT branch in-place.
+This mechanism carries base-branch artifacts (`CONTEXT.md`, `docs/adr/**`, `docs/specs/**`, `docs/plans/**` — `simo-dev:grill-me` and `simo-dev:plan-write` are the two writers) into a worktree once one exists. It is invoked by `task-intake` step 8's row-1/row-2 branch (see `SKILL.md`) — never by row 3, which has nothing separate to carry. Do NOT branch in-place.
 
 Not via the stash: `refs/stash` is ONE stack shared by every worktree of the repo, and this carry crosses two of them, so a `push` here and a `pop` there can pair with somebody else's entry — both at rc 0 (logged in the author's own notes, §17 — worth keeping a similar log). A throwaway commit on a **detached** HEAD keeps the base branch ref still, and the two worktrees share the object database, which is what makes `<carry-sha>` readable from the new one. Not `lib/park_and_rebase.py` either: that parks and restores inside one worktree — its record lives in that worktree's git dir — and never moves work to another tree.
 

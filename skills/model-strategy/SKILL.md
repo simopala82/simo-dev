@@ -17,7 +17,7 @@ Wraps `lib/model_strategy.py` so viewing/changing which model backs each dispatc
      printf '%s: %s\n' "$c" "${v:-(default)}"
    done
    ```
-   Explain what "(default)" means per category: for `code_review`, default = inherit the caller's tier; for `explore_research`, default = `sonnet`; for `plan_critique`, default = `fable` (automatic plan-critique dispatch happens) — set it to `none` (lowercase, case-sensitive) to fully disable dispatch instead; for `plan_execute`, default = inherit the caller's tier (same as `code_review`).
+   Explain what "(default)" means per category: for `code_review`, default = inherit the caller's tier; for `explore_research`, default = `sonnet`; for `plan_critique`, default = `sonnet` (automatic plan-critique dispatch happens) — set it to `none` (lowercase, case-sensitive) to fully disable dispatch instead; for `plan_execute`, default = inherit the caller's tier (same as `code_review`).
 
 2. **Ask what to change** — present the four category names plus a "just show me, no change" option. On a category pick, ask for the new model value as free text: the script enforces no whitelist of model names, so accept whatever the user types, but mention `sonnet`/`opus`/`fable`/`haiku` as the names in common use — not a closed list, don't phrase it as one. For `plan_critique` specifically, also mention `none` as the way to fully disable automatic plan-critique dispatch — it has no special meaning for the other three categories.
 
@@ -36,6 +36,6 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 python3 "$R/lib/model_strategy.py" set "<category>" ""
 ```
 
-This is how a user clears a category back to its built-in default — `get_value` already treats an empty string the same as unconfigured, so there is no separate "unset"/"delete" verb. What "default" means varies per category: inherit-the-caller's-tier for `code_review` and `plan_execute`, `sonnet` for `explore_research`, `fable` for `plan_critique`.
+This is how a user clears a category back to its built-in default — `get_value` already treats an empty string the same as unconfigured, so there is no separate "unset"/"delete" verb. What "default" means varies per category: inherit-the-caller's-tier for `code_review` and `plan_execute`, `sonnet` for `explore_research`, `sonnet` for `plan_critique`.
 
 For `plan_critique` specifically, setting it to the literal string `none` (`model_strategy.py set plan_critique none`) fully disables automatic plan-critique dispatch — not a new CLI verb (the CLI still only has `get`/`set`), just a value that `plan_critique`'s one call site (`simo-dev:plan-write`'s own review gate) interprets specially. `code_review`, `explore_research` and `plan_execute` have no such disable concept; `none` is not special for them.
