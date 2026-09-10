@@ -18,7 +18,8 @@ Usage:
     tracker_config.py run [--config PATH] <PREFIX> <FIELD> [ARGS...]
 
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
-supports_subtasks, post_merge_state, scope_fetch_cmd, comment_cmd, link_cmd, assign_cmd.
+supports_subtasks, post_merge_state, scope_fetch_cmd, comment_cmd, link_cmd, assign_cmd,
+requirements_review_cmd.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -64,6 +65,19 @@ consumer, best-effort like transition_cmd. private/jira_assign.py (a sibling
 task in this same plan) implements this contract for JIRA — configure with:
 
     tracker_config.py set <PREFIX> assign_cmd "python3 <path to jira_assign.py>"
+
+Same source-working-tree-path rule as the fields above it.
+
+requirements_review_cmd is invoked as `<CMD> <key> <body-file>`; the configured
+command must write the UTF-8 requirements/AC draft from <body-file> into the
+ticket (mechanism left to that command) and exit 0 on success.
+lib/post_requirements_review.py is the sole consumer, reached from
+simo-dev:task-intake step 4.5 (ticket mode, key known immediately) and step
+5.5 (prompt mode, key resolved later). private/jira_requirements_review.py
+implements this contract for JIRA by appending a non-destructive block to the
+ticket description — configure with:
+
+    tracker_config.py set <PREFIX> requirements_review_cmd "python3 <path to jira_requirements_review.py>"
 
 Same source-working-tree-path rule as the fields above it.
 
@@ -120,6 +134,7 @@ FIELDS = (
     "comment_cmd",
     "link_cmd",
     "assign_cmd",
+    "requirements_review_cmd",
 )
 
 

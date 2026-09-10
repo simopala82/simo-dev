@@ -32,6 +32,7 @@ Fields, one per prefix:
 - `supports_subtasks` — `true`/`false`; gates automated sub-task creation for cross-repo/team work.
 - `post_merge_state` — the state a ticket lands on post-merge; defaults to `Ready for Testing` when unset.
 - `scope_fetch_cmd` — fetches ticket-view text for `lib/jira_scope.py`; `-` means explicitly declined, treated the same as unconfigured.
+- `requirements_review_cmd` — writes a drafted Requirements/Acceptance Criteria block back to the ticket; invoked at `task-intake` step 4.5 (ticket mode) or step 5.5 (prompt mode).
 
 An unconfigured field is a silent no-op, never an error — a read-only tracker, or no tracker at all, both work out of the box. To disable tracker integration entirely for a repo or session: `DEV_FLOW_NO_TRACKER=1` or a `.claude/no-tracker` marker file.
 

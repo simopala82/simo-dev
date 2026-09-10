@@ -1,5 +1,4 @@
-## 1.4.1 (2026-09-09)
+## 1.5.0 (2026-09-10)
 
-### Other Changes
-- docs(simo-dev): close public-docs gaps vs actual plugin mechanisms
-- chore: default plan_critique to sonnet instead of fable
+### Features
+- feat(simo-dev): task-intake requirements write-back hook

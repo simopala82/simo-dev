@@ -54,7 +54,7 @@ The signals above can surface after intake ends — typically during `simo-dev:c
 3. **Point this branch's flow at the sub-task, without renaming an already-pushed branch**: write the sub-task key to `.claude/ticket-key-override` in the worktree root (single line, e.g. `PROJ-1994`) — `derive_ticket_key.py` reads it before falling back to the branch-derived key, so every later transition in this session (commit, mr-followup) targets the sub-task automatically. Worktree-local and untracked; never commit it — check `.claude/ticket-key-override` is gitignored in this repo BEFORE writing it, same as step 6 does for `.worktrees/`: this repo's own `.claude/.gitignore` carries the entry, but another repo running this flow needs its own (`.git/info/exclude` — local, uncommitted, same mechanism step 6 uses — is safer than a tracked `.gitignore` line, since it needs no commit of its own in a repo this session may not otherwise be touching).
 4. If a second, not-yet-startable part exists (e.g. gated on a deploy), create its sub-task too and leave it for its own future intake — it gets its own branch/worktree when picked up.
 
-**Mid-intake (from step 4, before step 6 runs (now deferred to step 8)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet), then step 5 onward — step 5.6 takes the sub-task in charge when reached, no separate re-run needed.
+**Mid-intake (from step 4, before step 6 runs (now deferred to step 8)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet), then step 4.5 (ticket mode, on the sub-task key) and step 5 onward — step 5.6 takes the sub-task in charge when reached, no separate re-run needed.
 
 Worked example: PROJ-100 (a service's schedule tune) turned out to also require flipping 2 live Grafana alert rules. Split into PROJ-101 (the schedule work, already done — override written on the existing branch) and PROJ-102 (the alert gate flip, gated on deploy — a fresh sub-task, intaken separately later). PROJ-100 became the umbrella, synced per the section above once both land.
 
@@ -117,11 +117,30 @@ Escalation is safe wherever grill-me writes artifacts — the step-3 pre-flight 
 > "Direction look right? [y / redirect / deep-dive]"
 > Default: `deep-dive` if ≥2 fuzzy signals OR prompt mode without a ticket OR open architecture decision; else `y`.
 
-- `y` → step 5.
+- `y` → step 4.5.
 - `redirect <reasoning>` → incorporate, re-run Explore if needed, re-present. Loop until `y`.
 - `deep-dive` → escalate per 4b-bis, announce in one line, invoke, re-present this gate.
 
 Gate exits only on `y`.
+
+### 4.5. Requirements write-back (always-on)
+
+Runs once step 4's gate exits on `y` (direction approved), before step 5.
+
+**Draft.** From the approved direction (the candidate directions plus the `Choices made:` list already produced at step 4c), write a **Requirements / Acceptance Criteria** block: 3-6 bullets, each a condition checkable true/false against the finished work — not a restatement of the direction prose. Keep it as its own block; it is what gets written to the ticket, not shown to the user again here. Write it to a temp file, same as step 5.5's own comment body does.
+
+**Ticket mode** (key already known — from step 1's mode determination, or from a freshly-created sub-task key on the late-promotion path): invoke the hook now.
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/post_requirements_review.py" "<KEY>" "<tmpfile>"
+```
+
+Announce: `Requirements: <script's stdout line>`.
+
+**Prompt mode** (no key yet — step 5 may create one): hold the drafted block for this session; the call happens at step 5.5 instead, once the key (if any) is resolved — see step 5.5.
+
+No separate gate: like `comment_cmd`, the hook is a silent no-op when `requirements_review_cmd` is unconfigured for the prefix — configuring the field is what opts a prefix in, not a question asked here.
 
 ### 5. Ticket decision (prompt mode only)
 
@@ -154,6 +173,15 @@ python3 "$R/lib/post_tracker_comment.py" "<KEY-or-empty>" "<tmpfile>"
 ```
 
 Announce the result in one line: `Direction: <script's stdout line>` (e.g. `Direction: posted: PROJ-1234` / `Direction: skipped: no ticket key`).
+
+If step 4.5 ran without a key yet (its Prompt mode branch, not its Ticket mode branch), invoke the deferred requirements write-back now, using the block drafted at step 4.5 and the key just resolved by step 5:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/post_requirements_review.py" "<KEY-or-empty>" "<tmpfile>"
+```
+
+Announce: `Requirements: <script's stdout line>`.
 
 ### 5.6. Take ticket in charge
 
