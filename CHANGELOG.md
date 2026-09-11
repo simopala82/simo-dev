@@ -1,4 +1,7 @@
-## 1.5.1 (2026-09-11)
+## 1.6.0 (2026-09-11)
+
+### Features
+- feat(simo-dev): skip plan-write for a bare plan with no open choices
 
 ### Other Changes
-- chore(simo-dev): release 0.1.170
+- docs(simo-dev): document Interfaces/Consumes blind spot in plan-execute batch detector

@@ -336,6 +336,17 @@ On this run's own row 1 or row 2 (a normal `git worktree add`, artifacts landing
 
 ### 7. Detailed plan
 
+If step 4c's `Choices made:` list came back empty (the same condition step 4c itself already uses to decide whether to print that list at all — no new judgment introduced here), skip invoking `simo-dev:plan-write` and write the plan file directly instead, at the same path convention documented below (`docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md`; no ticket → drop the key segment).
+
+The directly-written file must contain:
+- A Goal line, taken from step 4c's one-line gist.
+- A single `### Task 1: <the literal request, restated>` section listing the concrete edits already named in the ticket/prompt and confirmed present by step 3's Explore output (values, target files).
+- A Files-touched block using the plan's own standard `- Modify: \`path\`` / `- Create: \`path\`` bullet syntax — never a plain prose list. This exact form matters: `check_base_freshness.py`'s `files_from_plan()` parses exactly that bullet form to know which paths a plan touches, so step 7.5's "base-freshness check runs unchanged" claim only holds if this bare-plan file is parseable the same way a `plan-write`-produced one is.
+
+This is the minimum shape `simo-dev:plan-execute` already knows how to consume — one task, a disjoint-by-construction file set — not a new plan format.
+
+Otherwise (the list is non-empty — the default, and the only path before this fork):
+
 Invoke `simo-dev:plan-write` (on the current checkout — no worktree exists yet; step 6 runs later, from step 8) with the gathered context. Plan path: `docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md` (no ticket → drop the key segment). Create `docs/plans/` if missing.
 
 ### 7.5. Plan review gate (always-on)
@@ -351,7 +362,7 @@ This still compares the local `<base>` against `origin/<base>`, not against `HEA
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary.
 
-Then read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
+If this plan file came from step 7's bare-plan fork (step 4c's `Choices made:` list came back empty), skip this model lookup and the dispatch below entirely — treat it exactly like the `PLAN_CRITIQUE_MODEL` empty case: no model lookup, no `plan-reviewer` `Agent` dispatch, no autofix rounds. Nothing was generated here to critique, only a restatement of material already confirmed earlier in the flow. Otherwise, read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
@@ -363,7 +374,9 @@ elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
 fi
 ```
 
-Empty (only reached via the explicit `none` sentinel now) → no dispatch. Non-empty → dispatch an `Agent` with `subagent_type: simo-dev:plan-reviewer`, `model: $PLAN_CRITIQUE_MODEL`, `run_in_background: false` (same reasoning as `code-review-protocol` item 2: the gate must see the findings before the user is asked to proceed) — prompt = the plan file content just read from disk plus the gathered context already available at this step. Parse the response's findings in the same `[severity] location — message` line format `code-reviewer` findings use elsewhere in this plugin.
+Empty (only reached via the explicit `none` sentinel now, or a bare plan per above) → no dispatch. Non-empty → dispatch an `Agent` with `subagent_type: simo-dev:plan-reviewer`, `model: $PLAN_CRITIQUE_MODEL`, `run_in_background: false` (same reasoning as `code-review-protocol` item 2: the gate must see the findings before the user is asked to proceed) — prompt = the plan file content just read from disk plus the gathered context already available at this step. Parse the response's findings in the same `[severity] location — message` line format `code-reviewer` findings use elsewhere in this plugin.
+
+There is no runtime reviewer here to auto-escalate on evidence, unlike `review-loop`'s high/critical-finding restore (rationale: `docs/specs/2026-09-11-task-intake-bare-plan-design.md`, "Escape hatch"). If `simo-dev:plan-execute` or the user (at this gate's `edit`) surfaces a real design decision the bare-plan file didn't anticipate, the correction is manual: stop, mark the bare-plan file superseded rather than silently overwriting it, and invoke `simo-dev:grill-me` or `simo-dev:plan-write` properly from there.
 
 **Auto-apply objective findings, before the gate is shown.** Classify each parsed finding:
 
@@ -388,7 +401,7 @@ Either condition → record a bypass verdict (which one fired), to be announced 
 Then show:
 
 - Clickable absolute path; 1-line gist + ticket key + branch.
-- **Plan summary** from the file just read (never memory): Goal (header line), Approach (2-3 bullets from Architecture), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
+- **Plan summary** from the file just read (never memory): Goal (header line), `Bare plan (no open design decisions — plan-write/plan-reviewer skipped)` (only when this plan file came from step 7's bare-plan fork — the auditability equivalent of `review-loop`'s "announce the cap value" rule: the shortcut must always be visible in the transcript, never silent), Approach (2-3 bullets from Architecture; omit for a bare plan — it has no Architecture section), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
 
 Path + gist + summary MUST be visible markdown in the chat reply BEFORE the gate prompt — unlike 4c, AskUserQuestion IS allowed here, but only in the same turn AFTER the text block (widget fields truncate; never their only carrier). Multiple plan files → one summary block each, single gate.
 

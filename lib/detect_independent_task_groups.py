@@ -11,7 +11,11 @@ label is skipped over; a trailing :123-145 line-range suffix on a
 Modify: entry is stripped before comparing paths). A second backtick
 span later on the same line -- simo-dev:plan-write's own prose-task
 anchor, e.g. "- Modify: `doc.md` at `<anchor>`" -- is not a path and is
-ignored. Tasks are read in plan order and merged into the
+ignored. A task's **Interfaces:** block (Consumes:/Produces:) is never
+read -- only **Files:** overlap decides whether two tasks batch together;
+the operational implication for the caller is documented in
+simo-dev:plan-execute's SKILL.md, in the "Known, unmitigated limitation"
+paragraph. Tasks are read in plan order and merged into the
 current batch only when their file set is disjoint from every task
 already in it; otherwise the current batch closes and a new one starts
 with that task. This never reorders tasks -- plan order is preserved
