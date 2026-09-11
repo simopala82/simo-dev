@@ -1,4 +1,4 @@
-## 1.5.0 (2026-09-10)
+## 1.5.1 (2026-09-11)
 
-### Features
-- feat(simo-dev): task-intake requirements write-back hook
+### Other Changes
+- chore(simo-dev): release 0.1.170
