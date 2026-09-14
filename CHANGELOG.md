@@ -1,7 +1,7 @@
-## 1.7.0 (2026-09-11)
+## 1.7.1 (2026-09-14)
 
-### Features
-- feat(simo-dev): check design spec before trimming plan content as out-of-scope
+### Bug Fixes
+- fix(simo-dev): register both paths of a move/rename bullet in detect_independent_task_groups
 
 ### Other Changes
-- chore(simo-dev): release 0.1.171
+- chore(simo-dev): release 0.1.172

@@ -11,7 +11,12 @@ label is skipped over; a trailing :123-145 line-range suffix on a
 Modify: entry is stripped before comparing paths). A second backtick
 span later on the same line -- simo-dev:plan-write's own prose-task
 anchor, e.g. "- Modify: `doc.md` at `<anchor>`" -- is not a path and is
-ignored. A task's **Interfaces:** block (Consumes:/Produces:) is never
+ignored, UNLESS the two spans are joined by an arrow ("->" or the
+unicode "→"), e.g. "- Modify (move): `old/path.py` -> `new/path.py`" --
+there, both spans are paths (the move's source and destination) and
+both enter the file set, so a later task that touches the freed-up
+source path is correctly treated as overlapping rather than
+independent. A task's **Interfaces:** block (Consumes:/Produces:) is never
 read -- only **Files:** overlap decides whether two tasks batch together;
 the operational implication for the caller is documented in
 simo-dev:plan-execute's SKILL.md, in the "Known, unmitigated limitation"
@@ -41,8 +46,17 @@ FILES_BLOCK_RE = re.compile(r"\*\*Files:\*\*\n((?:- .+\n?)+)")
 # Only the FIRST backtick span on a "- <label>: `path`" line is the path --
 # simo-dev:plan-write's own prose-task template (SKILL.md's "anchor and
 # outcome" convention) produces lines like "- Modify: `doc.md` at `<anchor>`",
-# where a second backtick span is a prose anchor, not a file.
-LINE_PATH_RE = re.compile(r"^-\s*\S+:\s*`([^`]+)`")
+# where a second backtick span is a prose anchor, not a file. The label may
+# contain spaces (e.g. "Modify (move):"), so it is matched up to the first
+# ":" rather than as a single \S+ token.
+LINE_PATH_RE = re.compile(r"^-\s*[^`:]+:\s*`([^`]+)`")
+# A move/rename bullet -- "- <label>: `source` -> `dest`" or "... `source` → `dest`" --
+# names two real paths, not a path plus a prose anchor: both must enter the
+# file set so a later task touching the freed-up source overlaps correctly.
+# Only "->" and "→" are recognized connectors -- not a closed set of every
+# way a plan might phrase a move (e.g. "... `source` to `dest`" falls through
+# to LINE_PATH_RE below and silently keeps only the first path).
+MOVE_LINE_RE = re.compile(r"^-\s*[^`:]+:\s*`([^`]+)`\s*(?:->|→)\s*`([^`]+)`")
 
 
 def _strip_line_range(path: str) -> str:
@@ -62,6 +76,11 @@ def parse_task_files(plan_text: str) -> list[tuple[int, set[str]]]:
         files_match = FILES_BLOCK_RE.search(section)
         if files_match:
             for line in files_match.group(1).splitlines():
+                move_match = MOVE_LINE_RE.match(line)
+                if move_match:
+                    for path in move_match.groups():
+                        file_set.add(_strip_line_range(path))
+                    continue
                 path_match = LINE_PATH_RE.match(line)
                 if path_match:
                     file_set.add(_strip_line_range(path_match.group(1)))

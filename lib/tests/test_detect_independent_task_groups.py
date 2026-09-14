@@ -106,6 +106,31 @@ def test_main_no_tasks_exits_2(tmp_path, capsys):
     assert "no '## Task N:' or '### Task N:' headings" in capsys.readouterr().err
 
 
+def test_move_bullet_source_path_overlaps_with_later_task():
+    # Reproduces the bug: Task 1 moves a file away with "Modify (move): `A` -> `B`",
+    # Task 2 recreates `A` from scratch. Both A and B must enter Task 1's file
+    # set, so Task 2 is recognized as overlapping (sequential), not independent.
+    plan = _plan(
+        "### Task 1: A\n\n**Files:**\n"
+        "- Modify (move): `web/app/page.tsx` -> `web/app/crea/page.tsx`\n\n"
+        "### Task 2: B\n\n**Files:**\n- Create: `web/app/page.tsx`\n"
+    )
+    tasks = digt.parse_task_files(plan)
+    assert tasks[0][1] == {"web/app/page.tsx", "web/app/crea/page.tsx"}
+    assert digt.compute_batches(tasks) == [[1], [2]]
+
+
+def test_move_bullet_unicode_arrow_source_path_overlaps():
+    plan = _plan(
+        "### Task 1: A\n\n**Files:**\n"
+        "- Rename: `old/name.py` → `new/name.py`\n\n"
+        "### Task 2: B\n\n**Files:**\n- Modify: `old/name.py`\n"
+    )
+    tasks = digt.parse_task_files(plan)
+    assert tasks[0][1] == {"old/name.py", "new/name.py"}
+    assert digt.compute_batches(tasks) == [[1], [2]]
+
+
 def test_two_hash_task_headers_are_parsed():
     # A plan may use `## Task N:` instead of the template's `### Task N:`
     # (undocumented nesting before this fix, or a legacy plan) -- the parser
