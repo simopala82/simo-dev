@@ -31,7 +31,7 @@ For open scope / architecture-level work (task-intake 4b-bis escalation, or on r
 
 **Hard gate: no implementation skill, code, or scaffolding until a written design is presented AND the user approves it. "Too simple to need a design" is not an exemption — the design may be a few sentences, but it must be presented and approved.**
 
-1. **Explore context** — files, docs, recent commits — before asking anything.
+1. **Explore context** — files, docs, recent commits, and (on a standalone/on-request invocation not escalated from `task-intake`) `~/.claude/reference/` filenames matching any external service/product named in the task — before asking anything. Describe facts, never paste literal secrets (passwords, tokens, keys) that some reference files inline (e.g. `local-services.md`) — step 6 below commits this into a spec file.
 2. **Scope check** — if the request spans multiple independent subsystems, flag it immediately and decompose: each sub-project gets its own design → plan cycle; grill the first one.
 3. **Grill** per the rules above (purpose, constraints, success criteria).
 4. **Propose 2-3 approaches** with trade-offs; lead with your recommendation and why.

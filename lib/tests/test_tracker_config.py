@@ -245,3 +245,10 @@ def test_requirements_review_cmd_roundtrip(tmp_path, capsys):
     assert tc.main(["set", "CUS", "requirements_review_cmd", "python3 /x/jira_requirements_review.py", "--config", str(path)]) == 0
     assert tc.main(["get", "CUS", "requirements_review_cmd", "--config", str(path)]) == 0
     assert capsys.readouterr().out == "python3 /x/jira_requirements_review.py"
+
+
+def test_post_merge_state_no_deploy_roundtrip(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    assert tc.main(["set", "CUS", "post_merge_state_no_deploy", "Done", "--config", str(path)]) == 0
+    assert tc.main(["get", "CUS", "post_merge_state_no_deploy", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == "Done"

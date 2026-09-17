@@ -36,4 +36,4 @@ python3 "$R/skills/mr-followup/lib/pipeline_poll_github.py" "<pr-num>"
 
 `pipeline_poll_gitlab.py` scopes its own `glab pipeline list` call to `<worktree-abs>` internally (passed as the subprocess `cwd`) — `glab` resolves its project from the process cwd, so this replaces the old external `cd`. `pipeline_poll_github.py` is not cwd-scoped at all: `gh` resolves the PR by number, no repo context needed. This asymmetry is why GitHub's poll needs the extra liveness probe (`gh pr view --json number`) to split `3` from `5` — `gh pr checks`'s own exit code is unusable for that (non-zero for failing/pending/absent checks alike) — while GitLab's does not, since `glab pipeline list`'s exit code IS usable directly.
 
-Caller-side handling of the exit code: `mr-followup` step 2.
+Launched at `mr-followup` step 2 (background, non-blocking); caller-side handling of the exit code happens at step 7, the flow's sync point for it.

@@ -180,8 +180,18 @@ mkdir -p "$MRTMP"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/build_mr_ctx.py" --repo "$W" > "$MRTMP/mr_ctx.json"
 TARGET_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target)
+if git -C "$W" merge-base --is-ancestor "$TARGET_BRANCH" HEAD 2>/dev/null; then
+  LOCAL_BASE_AHEAD=$(git -C "$W" rev-list "origin/${TARGET_BRANCH}..${TARGET_BRANCH}")
+  if [ -n "$LOCAL_BASE_AHEAD" ]; then
+    echo "STOP: local '$TARGET_BRANCH' is ahead of origin/$TARGET_BRANCH, and those commits are in this branch's ancestry — they would show up in the MR diff as unrelated changes:"
+    git -C "$W" log --oneline "origin/${TARGET_BRANCH}..${TARGET_BRANCH}"
+    exit 1
+  fi
+fi
 git -C "$W" diff "origin/${TARGET_BRANCH}...HEAD" > "$MRTMP/mr_diff.txt"  # three-dot: merge-base diff, matches the forge MR view
 ```
+
+Mirror-image of step 0.5's guard: that one stops when `origin/<base>` has advanced *beyond* the branch's fork point; this one stops when the *local* `<base>` is ahead of `origin/<base>` and those extra commits are already part of this branch's ancestry (e.g. the branch was created from, or later rebased/merged onto, a local base that was never pushed). `merge-base --is-ancestor` guards against false positives from unrelated local-base work this branch never incorporated. There is no bypass: ask the user for explicit confirmation before pushing the local `<base>` (a protected-branch push), never push it unasked; once pushed, re-run this whole block — it already re-fetches `origin` first, so the re-run passes cleanly with no further action. If the user declines to push, MR generation cannot proceed until they do (or the branch is rebased onto a base that no longer carries the unpushed commits). The `exit 1` ends the step-7 block before `mr_diff.txt` is written, same as step 5's own guard ending the rest of the commit cascade on a non-zero exit — every later step here depends on `mr_diff.txt`/`mr_ctx.json` existing.
 
 `$MRTMP` is keyed by repo+branch — concurrent sessions must not clobber each other (incident 2026-06-10). Deterministic: re-derive at the top of any later Bash block; substitute the echoed literal path in Write-tool calls.
 

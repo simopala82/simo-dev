@@ -20,6 +20,7 @@ Write for a skilled developer with ZERO context for this codebase: which files t
 **Architecture:** [2-3 sentences]
 **Tech Stack:** [key technologies]
 **Depends on:** [optional — `<TICKET-KEY> — assumed shape: <one-liner>`. Omit entirely unless this plan's approach assumes the API/contract of a ticket not yet merged at plan-write time.]
+**Deploy required:** [optional — `yes` | `no`. Omit entirely unless every task in this plan applies its change directly to a live external system that is already verified at plan-write time, with nothing left for a deploy pipeline to publish — omitting the field (or writing `yes`) defaults to `yes`, today's unchanged behavior.]
 
 ## Global Constraints
 [project-wide requirements — version floors, naming rules, repo conventions — one line each, exact values. Every task implicitly includes this section.]
@@ -27,6 +28,8 @@ Write for a skilled developer with ZERO context for this codebase: which files t
 ```
 
 `Depends on` is optional — set it only when the plan's approach assumes the shape of a ticket that has not merged yet (typically a blocking sub-task opened via `simo-dev:grill-me` and developed in another session). `simo-dev:plan-execute` step 1 re-derives that ticket's real status and merged diff before executing any task; a plan with no such assumption omits the field.
+
+`Deploy required` is optional too — set it to `no` only when every task in this plan applies its change directly to a live external system, already verified at plan-write time, with no artifact for a deploy pipeline to publish afterward; omit it (or write `yes`) for anything that touches application code or otherwise needs a deploy to take effect. `simo-dev:mr-followup` step 8 reads it from the merged plan file to pick the post-merge ticket state (`docs/canonical-flow.md` documents the full routing).
 
 A whole-suite verification gate:
 - States the baseline at a named branch-point SHA (`git merge-base HEAD origin/<base>`) and gates on the **delta** above it, never the raw total.

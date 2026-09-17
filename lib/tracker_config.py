@@ -18,8 +18,8 @@ Usage:
     tracker_config.py run [--config PATH] <PREFIX> <FIELD> [ARGS...]
 
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
-supports_subtasks, post_merge_state, scope_fetch_cmd, comment_cmd, link_cmd, assign_cmd,
-requirements_review_cmd.
+supports_subtasks, post_merge_state, post_merge_state_no_deploy, scope_fetch_cmd, comment_cmd,
+link_cmd, assign_cmd, requirements_review_cmd.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -130,6 +130,7 @@ FIELDS = (
     "create_skill",
     "supports_subtasks",
     "post_merge_state",
+    "post_merge_state_no_deploy",
     "scope_fetch_cmd",
     "comment_cmd",
     "link_cmd",

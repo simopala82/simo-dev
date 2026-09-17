@@ -85,6 +85,10 @@ EXPLORE_MODEL=$(python3 "$R/lib/model_strategy.py" get explore_research)
 [ -z "$EXPLORE_MODEL" ] && EXPLORE_MODEL="sonnet"
 ```
 
+**Personal reference check** — before dispatching Explore, match external service/product names mentioned in the ticket/prompt against `~/.claude/reference/` filenames (`ls ~/.claude/reference/ 2>/dev/null | grep -i <name>` per name). This tree is outside any target repo, so neither Explore agent below covers it (Agent B is repo-scoped). Any match → read it now and fold relevant facts (auth, known gotchas, request/response shapes) straight into the step-3 summary — additive to the ≤200-word cap below, not counted against it — so `plan-write`/`grill-me` inherit them instead of re-discovering them at runtime. Describe facts, never paste literal secrets (passwords, tokens, keys) that some reference files inline (e.g. `local-services.md`) — this summary can end up in a ticket comment or a committed plan file.
+
+**Domain glossary check** — `CONTEXT.md` at the repo root (or the relevant file(s) under the context dir per `CONTEXT-MAP.md`) is written by `grill-me`'s domain capture and the commit knowledge-harvest, but until now neither this step nor `plan-write` ever read it back — Agent B's own scope is patterns/utilities/tests, not the glossary, and this check front-loads terms before Explore even returns. If present, read it now and use its terms when interpreting the ticket/prompt; fold any term relevant to this task into the summary, same cap treatment as above.
+
 Dispatch **up to 2 `Explore` subagents in parallel** (single message; both pass `model: $EXPLORE_MODEL`):
 
 - Agent A: impacted repos / services / modules (file paths, boundaries).
