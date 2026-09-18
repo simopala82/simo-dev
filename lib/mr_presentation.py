@@ -218,6 +218,7 @@ def render_prompt(template: str, diff: str, context: dict) -> str:
         "{ticket_summary}": context.get("ticket_summary", "(no ticket)"),
         "{commit_log}": context.get("commit_log", "(no commit log)"),
         "{file_stat}": context.get("file_stat", "(no stat)"),
+        "{changed_files}": context.get("changed_files", "(no file list)"),
         "{branch_meta}": json.dumps(context.get("branch_meta", {})),
         "{jira_scope}": context.get("jira_scope", "") or "(no JIRA ticket linked)",
         "{diff_truncated}": truncated,
@@ -266,6 +267,15 @@ def assemble_markdown(presentation: dict, context: dict, mode: str) -> str:
     lines.append(mermaid)
     lines.append("```")
     lines.append("")
+
+    if mode == "create" and (key_files := presentation.get("key_files")):
+        lines.append("### Files to review")
+        lines.append("")
+        for kf in key_files:
+            if not isinstance(kf, dict) or not kf.get("path"):
+                continue
+            lines.append(f"- `{kf['path']}` — {kf.get('role', '')}")
+        lines.append("")
 
     if mode == "review":
         lines.append("---")

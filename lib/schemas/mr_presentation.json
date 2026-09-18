@@ -10,6 +10,13 @@
                          "items": {"type": "string", "maxLength": 200},
                          "description": "Bullets framed as business / risk / cost / rollout-safety value."},
     "mermaid":          {"type": "string", "description": "Valid mermaid of the declared diagram_type (flowchart->'flowchart', before_after->'flowchart', sequence->'sequenceDiagram', state->'stateDiagram-v2'). NO fences. ALL node labels double-quoted (A[\"...\"], C{\"...\"}); NEVER backslash-escape brackets (\\[ \\] — backslash is not an escape character in mermaid); use <br/> for line breaks. Inside a label write a double quote as #quot; (' only if a single quote is what you meant), and a literal angle bracket as #lt; / #gt; — those are mermaid's own escapes, and a bare <type> is read as an HTML tag and disappears from the rendering. NEVER HTML entities (&quot; &lt; &gt;). Concrete sample data ONLY on the 1-2 edges central to the change, not every edge. Highlight new/changed nodes (classDef + :::changed for flowchart/before_after/state; Note/rect for sequence). Keep it focused: ~4-8 nodes."},
+    "key_files":        {"type": "array", "minItems": 0, "maxItems": 8,
+                         "items": {"type": "object", "required": ["path", "role"],
+                                   "properties": {
+                                     "path": {"type": "string", "description": "Path exactly as it appears in the changed-files list or the diff -- never invented."},
+                                     "role": {"type": "string", "maxLength": 60, "description": "Short role, e.g. 'core logic', 'test', 'config', 'docs'."}
+                                   }},
+                         "description": "The files central to understanding this change, in the order the reviewer should read them. NOT every changed file -- only the ones that matter. Empty array if the diff is a single obvious file."},
     "suggested_labels": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
     "warnings":         {"type": "array", "items": {"type": "string", "maxLength": 240}, "maxItems": 5},
     "ticket_drift":     {"type": "boolean", "description": "Review mode only: true if the diff implements materially less or more than the linked ticket's scope. Omit/false in create mode."},

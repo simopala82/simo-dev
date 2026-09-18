@@ -528,3 +528,123 @@ def test_normalize_presentation_invalid_json_errors(tmp_path):
     rc, out, err = run_lib(["--normalize-presentation", str(pres)])
     assert rc != 0
     assert "Traceback" not in err
+
+
+def test_prepare_create_mode_substitutes_changed_files_placeholder():
+    rc, out, err = run_lib([
+        "--mode", "create",
+        "--diff-file", str(FIX / "simple_diff.txt"),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    request = json.loads(out)
+    assert "{changed_files}" not in request["prompt"]
+    assert "(no file list)" in request["prompt"]  # simple_ctx.json fixture has no changed_files key
+
+
+def test_prepare_create_mode_includes_real_changed_files_value(tmp_path):
+    ctx = json.loads((FIX / "simple_ctx.json").read_text())
+    ctx["changed_files"] = "src/foo.py\nsrc/foo_test.py"
+    ctx_path = tmp_path / "ctx_with_changed_files.json"
+    ctx_path.write_text(json.dumps(ctx))
+    rc, out, err = run_lib([
+        "--mode", "create",
+        "--diff-file", str(FIX / "simple_diff.txt"),
+        "--context-file", str(ctx_path),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    request = json.loads(out)
+    assert "src/foo.py" in request["prompt"]
+    assert "src/foo_test.py" in request["prompt"]
+    assert "(no file list)" not in request["prompt"]
+
+
+def test_assemble_includes_files_to_review_when_key_files_present(tmp_path):
+    pres = json.loads((FIX / "simple_presentation.json").read_text())
+    pres["key_files"] = [
+        {"path": "lib/mr_presentation.py", "role": "core logic"},
+        {"path": "lib/tests/test_mr_presentation.py", "role": "test"},
+    ]
+    pres_path = tmp_path / "with_key_files.json"
+    pres_path.write_text(json.dumps(pres))
+    rc, out, err = run_lib([
+        "--assemble", "--mode", "create",
+        "--presentation-json", str(pres_path),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    assert "### Files to review" in out
+    assert "- `lib/mr_presentation.py` — core logic" in out
+    assert "- `lib/tests/test_mr_presentation.py` — test" in out
+    assert out.index("`lib/mr_presentation.py`") < out.index("`lib/tests/test_mr_presentation.py`")
+
+
+def test_assemble_omits_files_to_review_when_key_files_absent():
+    rc, out, err = run_lib([
+        "--assemble", "--mode", "create",
+        "--presentation-json", str(FIX / "simple_presentation.json"),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    assert "### Files to review" not in out
+
+
+def test_assemble_omits_files_to_review_when_key_files_empty(tmp_path):
+    """Schema (Task 1) documents key_files: [] as the deliberate output for a single/obvious-file
+    diff -- distinct from the field being absent entirely (covered above), same skip-if-empty
+    code path (the walrus binds to a falsy [] too), but an explicitly documented case worth its
+    own regression test."""
+    pres = json.loads((FIX / "simple_presentation.json").read_text())
+    pres["key_files"] = []
+    pres_path = tmp_path / "empty_key_files.json"
+    pres_path.write_text(json.dumps(pres))
+    rc, out, err = run_lib([
+        "--assemble", "--mode", "create",
+        "--presentation-json", str(pres_path),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    assert "### Files to review" not in out
+
+
+def test_assemble_omits_files_to_review_in_review_mode_even_when_key_files_present(tmp_path):
+    pres = json.loads((FIX / "simple_presentation.json").read_text())
+    pres["key_files"] = [{"path": "lib/mr_presentation.py", "role": "core logic"}]
+    pres_path = tmp_path / "review_with_key_files.json"
+    pres_path.write_text(json.dumps(pres))
+    rc, out, err = run_lib([
+        "--assemble", "--mode", "review",
+        "--presentation-json", str(pres_path),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    assert "### Files to review" not in out  # explicit mode=="create" gate, not just an untouched prompt
+    assert "Review legend" in out  # sanity: review mode's own section still renders
+
+
+def test_schema_allows_key_files():
+    schema = mr_presentation.load_schema()
+    props = schema["properties"]
+    assert "key_files" in props and props["key_files"]["type"] == "array"
+    assert "key_files" not in schema["required"]
+
+
+def test_assemble_skips_malformed_key_files_item_instead_of_crashing(tmp_path):
+    """--normalize-presentation only checks REQUIRED_PRESENTATION_KEYS (key_files isn't one),
+    and the plain-text-JSON fallback documented in commit/SKILL.md step 7 bypasses schema
+    enforcement entirely -- so a key_files item missing 'path' or 'role' can reach --assemble."""
+    pres = json.loads((FIX / "simple_presentation.json").read_text())
+    pres["key_files"] = [
+        {"role": "missing path"},
+        {"path": "lib/mr_presentation.py", "role": "core logic"},
+    ]
+    pres_path = tmp_path / "malformed_key_files.json"
+    pres_path.write_text(json.dumps(pres))
+    rc, out, err = run_lib([
+        "--assemble", "--mode", "create",
+        "--presentation-json", str(pres_path),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    assert "- `lib/mr_presentation.py` — core logic" in out
+    assert "missing path" not in out

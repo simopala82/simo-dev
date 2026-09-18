@@ -55,6 +55,7 @@ def main():
         "ticket_summary": ticket,
         "commit_log": git(repo, ["log", "--oneline", f"{base}..HEAD"]),
         "file_stat": git(repo, ["diff", "--stat", f"{base}..HEAD"]),
+        "changed_files": git(repo, ["diff", "--name-only", f"{base}..HEAD"]),
         "branch_meta": {"source": source, "target": target, "head_sha": head, "jira_key": jira},
     }))
 

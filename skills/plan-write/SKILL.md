@@ -75,6 +75,8 @@ Nesting: `Global Constraints` above is `##`; every `Task N` heading nests one le
 
 Logged in the author's own claim-hygiene notes (keep a similar file if you have one): "A recorded number can age for reasons that have nothing to do with what it measures."
 
+When a Task's Files touched are UI-related AND an approved mockup exists upstream (referenced from the design spec this plan is built from), reuse the existing `**Interfaces:** Consumes:` line to name it — `Consumes: docs/specs/YYYY-MM-DD-<topic>-mockup.html — approved mockup, implementation must match` — and add one extra step after the last TDD step (`minimal impl → PASS`): "Verify visual match against the mockup". This states the acceptance criterion only, no screenshot tool prescribed — the mechanism (a screenshot skill, a browser tool, manual inspection) is whatever the target repo already has. No new template field is introduced. No upstream mockup → no `Consumes:`/verification addition; the task proceeds exactly as any other task would today.
+
 ## No placeholders
 
 These are plan failures — never write them:

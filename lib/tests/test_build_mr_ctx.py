@@ -93,3 +93,74 @@ def test_ticket_summary_fetched_via_jira_scope_light_mode(tmp_path):
     assert ctx["branch_meta"]["jira_key"] == "PROJ-1234"
     assert "PROJ-1234: Canned summary" in ctx["ticket_summary"]
     assert "comments_shown=0" in ctx["ticket_summary"]  # light mode -> comments forced to 0
+
+
+def _init_repo_with_base_and_feature(path):
+    """Bare 'origin' + a work checkout: one base commit on main (pushed, HEAD set),
+    then a feature branch adding one file -- so build_mr_ctx.py can resolve a real
+    base/target and diff against it (existing helpers in this file have no remote,
+    so target/base always resolve empty and neither commit_log/file_stat/changed_files
+    is exercised against a real diff anywhere in this suite)."""
+    origin = path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    work = path / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.name", "t"], check=True)
+    (work / ".claude").mkdir()
+    (work / ".claude" / "no-tracker").touch()
+    (work / "base.txt").write_text("base")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+    subprocess.run(["git", "-C", str(work), "symbolic-ref",
+                    "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
+    subprocess.run(["git", "-C", str(work), "switch", "-q", "-c", "feat/thing"], check=True)
+    (work / "new_file.py").write_text("print('x')\n")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", "add new_file"], check=True)
+    return work
+
+
+def test_changed_files_lists_full_untruncated_paths(tmp_path):
+    repo = _init_repo_with_base_and_feature(tmp_path)
+    rc, out, err = run_build(repo, [])
+    assert rc == 0, err
+    ctx = json.loads(out)
+    assert ctx["changed_files"].strip() == "new_file.py"
+
+
+def test_changed_files_preserves_paths_file_stat_truncates(tmp_path):
+    """This is the feature's actual reason to exist (see the plan's Architecture note):
+    `git diff --stat` abbreviates a long/deeply-nested path with '...', `--name-only` does not."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    work = tmp_path / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(work), "config", "user.name", "t"], check=True)
+    (work / ".claude").mkdir()
+    (work / ".claude" / "no-tracker").touch()
+    (work / "base.txt").write_text("base")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+    subprocess.run(["git", "-C", str(work), "symbolic-ref",
+                    "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
+    subprocess.run(["git", "-C", str(work), "switch", "-q", "-c", "feat/thing"], check=True)
+    deep_dir = work / "a/very/deeply/nested/directory/structure/that/is/quite/long/to/trigger/truncation/in/diff/stat/output"
+    deep_dir.mkdir(parents=True)
+    long_path = "a/very/deeply/nested/directory/structure/that/is/quite/long/to/trigger/truncation/in/diff/stat/output/module.py"
+    (deep_dir / "module.py").write_text("print('x')\n")
+    subprocess.run(["git", "-C", str(work), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", "add deep file"], check=True)
+    rc, out, err = run_build(work, [])
+    assert rc == 0, err
+    ctx = json.loads(out)
+    assert long_path in ctx["changed_files"]
+    assert long_path not in ctx["file_stat"]  # confirms file_stat really does truncate this path
+    assert "..." in ctx["file_stat"]
