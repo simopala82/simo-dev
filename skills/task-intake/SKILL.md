@@ -8,11 +8,33 @@ description: Use when starting work from a ticket OR a free-text task prompt. Pr
 Entry point of the canonical task flow:
 `simo-dev:task-intake → simo-dev:plan-execute → simo-dev:review-loop → simo-dev:commit → simo-dev:mr-followup`
 
-Arguments: a ticket key (e.g. `ACME-123`) or a free-text prompt. If missing, prompt the user.
+Arguments: a ticket key (e.g. `ACME-123`) or a free-text prompt. If missing, the repo's own `.claude/tracker-queue-cmd` (if present) is consulted first to propose a queue candidate before falling back to prompting the user — see step 1 below.
 
 ## Steps
 
 ### 1. Determine input mode
+
+**No-argument queue check.** Runs only when `ARGUMENTS` is empty; when `ARGUMENTS` is non-empty, skip straight to the regex check below.
+
+Locate the repo root and check for `.claude/tracker-queue-cmd`:
+
+```bash
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f "$TOP/.claude/tracker-queue-cmd" ] && cat "$TOP/.claude/tracker-queue-cmd"
+```
+
+(This is a minimal, read-only check — step 3's own repo pre-flight runs later.) Empty output or non-zero exit (not a git repo, or no `.claude/tracker-queue-cmd`) → fall through to the regex check below, same as `ARGUMENTS` empty today.
+
+Otherwise, run the one-line command this printed and capture its stdout. Split into lines; a line without a tab is malformed and is dropped. Empty result, non-zero exit, or every line malformed → same fallback as above (state in one line that the queue command returned no candidates before falling back).
+
+`.claude/tracker-queue-cmd` is a normal committed file, so this command runs unconditionally, with no confirmation before execution — the `y`/`skip`/`manual` gate below only confirms the resulting *candidate*, never the command itself. Same trust model this plugin already applies to `tracker_config.py`'s `transition_cmd`/`create_skill`/`link_cmd` (also configured commands run without a per-invocation confirmation): a repo checkout is already a trust boundary, and a malicious edit to this file is no different from one to any other committed script in the tree.
+
+Otherwise, gate on the first remaining candidate `<key-or-path>` / `<title>`:
+
+> "No argument given — queue candidate: `<key-or-path>` — <title>. [y / skip / manual]"
+
+- `y` → if `<key-or-path>` matches `^[A-Z][A-Z0-9]+-[0-9]+$`, treat it exactly as if it had been passed as `ARGUMENTS` (continue at the regex check below, which now classifies it as ticket mode). Otherwise (a `.scratch/...` path, always relative to the repo root per `local_queue_fetch.py`'s own contract) skip the regex check entirely and continue directly in prompt mode: read the file at `$TOP/<key-or-path>`, substituting the `$TOP` value this same block already computed as a literal — never a bare relative path, and never re-deriving it from the ambient shell/tool cwd (this repo's own CLAUDE.md "Worktree cwd gotcha" documents why that is unreliable). Use that file's content as the task description, per `docs/agents/issue-tracker.md`'s "fetch the relevant ticket" convention.
+- `skip` → drop the first candidate and re-show this same gate on the next remaining line, with no re-invocation of the command. Once the list is exhausted, apply the same fallback as the empty-result case above.
+- `manual` → fall through to the regex check below exactly as if `.claude/tracker-queue-cmd` had been absent.
 
 Argument matches `^[A-Z][A-Z0-9]+-[0-9]+$` → **ticket mode**; else → **prompt mode**.
 
@@ -201,6 +223,8 @@ python3 "$R/lib/tracker_config.py" run "<ticket-prefix>" transition_cmd "<ticket
 
 No-op if `assign_cmd`/`transition_cmd` is not configured for the prefix — this covers a read-only tracker (fetch works, writes fail) with no special-case in this skill body, and also if the ticket is already assigned/at-or-past target. Any tracker-specific idempotency or flag-clearing behavior lives entirely inside the configured scripts, invisible to this skill. `DEV_FLOW_NO_TRACKER=1` / `.claude/no-tracker` marker skip both auto-assignment and auto-transition, AND the step-5 ticket question. `--sync-parent`: when `<ticket-key>` is a sub-task (step 2.5 already routed here instead of the umbrella), this also syncs the umbrella's status — see step 2.5.
 
+Announce the result in one line — a `|| echo "WARNING: ..."` only reaches the Bash tool result, never the user, unless repeated here: `Ticket: assign <no WARNING|WARNING: ...>, transition <no WARNING|WARNING: ...>`. Don't claim "ok"/"skipped" — `tracker_config.py run`'s own exit code doesn't distinguish "not configured" from "ran successfully", so the only thing safe to report is whether the WARNING text fired. A silent WARNING here is exactly the failure mode step 8's hand-off has no other way to catch.
+
 ### 6. Branch and worktree
 
 This procedure no longer runs unconditionally before step 7 — it is invoked from step 8, once step 7.5's gate has decided the hand-off routing. In-session: the orchestrator runs it here, live. `spawn_task`: the spawned child runs it, from its own actual location — never using values the orchestrator computed, since the child's location is not predictable from here.
@@ -362,6 +386,8 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 python3 "$R/lib/check_base_freshness.py" --repo "<repo>" --plan-files
 ```
 This still compares the local `<base>` against `origin/<base>`, not against `HEAD` — a stale local base still surfaces a real overlap here exactly as before; only the worktree-local divergence this same check would also catch after step 6 runs is no longer available at this point (that guard now runs per-task/per-commit instead, in `plan-execute` and `commit` step 0.5, unaffected by this change).
+
+rc 0/rc 2 here answers a file-overlap question, not a citation-staleness one: the base can advance on exactly the files the plan cites between this gate and step 8's actual worktree creation, with no worktree yet for the guard to see, and once that worktree does fork from the already-advanced base there is no overlap left to detect — the plan's own line numbers or "current behavior" claims can still be stale even though every later run of this same check reports rc 0. This gate cannot close that: the fix is at the point the worktree's own files become readable — see `plan-execute` step 1's "Load and review".
 
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary.

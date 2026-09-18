@@ -1,15 +1,11 @@
-## 1.8.0 (2026-09-17)
+## 1.9.0 (2026-09-18)
 
 ### Features
-- feat(simo-dev): route post-merge tickets to a configurable no-deploy state
+- feat(task-intake): add per-repo priority queue for no-args flow
 
 ### Bug Fixes
-- fix(simo-dev): extend local-base-ahead guard to mr-followup and mr-review
-- fix(simo-dev): stop MR diff generation when local base is ahead of origin
-- fix(mr-followup): make pipeline poll non-blocking
-- fix(simo-dev): check ~/.claude/reference/ before intake analysis
+- fix(task-intake): surface step 5.6 ticket-transition failures instead of a silent WARNING
 
 ### Other Changes
-- chore(simo-dev): release 0.1.175
-- chore(simo-dev): release 0.1.174
-- chore(simo-dev): release 0.1.173
+- chore(simo-dev): release 0.1.176
+- docs(simo-dev): cross-reference plan-citation staleness at task-intake/plan-execute

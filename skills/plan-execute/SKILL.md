@@ -7,7 +7,7 @@ description: Use when executing a written implementation plan task-by-task — l
 
 ## The loop
 
-1. **Load and review.** Read the plan file completely. Review it critically — raise concerns with the user BEFORE starting, not mid-task.
+1. **Load and review.** Read the plan file completely. Review it critically — raise concerns with the user BEFORE starting, not mid-task. This includes reconciling any literal citation the plan makes (a line number, a described "current" behavior of a file) against what the target files actually show in this worktree — `task-intake` step 7.5's base-freshness gate and this step's own checkpoint below both check file-level overlap, not citation staleness, and neither can catch a plan citation that aged between when the plan was written and when this worktree was actually forked.
 
    **Dependency freshness check.** If the header has a `Depends on: <TICKET>` field, run it before creating any todos — a stale worktree that still compiles is not proof the dependency is unchanged (incident 2026-08-05: a blocking sub-task merged with a different API shape than the plan assumed, and the worktree kept building because no touched symbol had been removed):
    ```bash
