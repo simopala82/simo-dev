@@ -68,14 +68,16 @@ task in this same plan) implements this contract for JIRA — configure with:
 
 Same source-working-tree-path rule as the fields above it.
 
-requirements_review_cmd is invoked as `<CMD> <key> <body-file>`; the configured
-command must write the UTF-8 requirements/AC draft from <body-file> into the
-ticket (mechanism left to that command) and exit 0 on success.
+requirements_review_cmd is invoked as `<CMD> <key> <body-file> [--replace]`; the
+configured command must write the UTF-8 requirements/AC draft from <body-file>
+into the ticket (mechanism left to that command) and exit 0 on success. When
+the ticket already carries a block written by a previous run, the command must
+leave it untouched and exit 4, unless --replace is given.
 lib/post_requirements_review.py is the sole consumer, reached from
 simo-dev:task-intake step 4.5 (ticket mode, key known immediately) and step
 5.5 (prompt mode, key resolved later). private/jira_requirements_review.py
-implements this contract for JIRA by appending a non-destructive block to the
-ticket description — configure with:
+implements this contract for JIRA by appending a block to the ticket
+description, never touching the author's text — configure with:
 
     tracker_config.py set <PREFIX> requirements_review_cmd "python3 <path to jira_requirements_review.py>"
 

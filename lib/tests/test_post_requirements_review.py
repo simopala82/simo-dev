@@ -51,3 +51,47 @@ def test_prefix_derived_uppercase_from_lowercase_key(tmp_path, monkeypatch):
 def test_cli_usage_error_exits_1(capsys):
     rc = prr.main(["only-one-arg"])
     assert rc == 1
+
+
+def test_rc4_maps_to_prior_block_skipped(tmp_path, monkeypatch):
+    path = tmp_path / "tracker.json"
+    target = tmp_path / "prior.py"
+    target.write_text("import sys\nsys.exit(4)\n")
+    prr.tc.set_field("PROJ", "requirements_review_cmd", f"python3 {target}", path)
+    monkeypatch.setattr(prr.tc, "config_path", lambda: path)
+    body = tmp_path / "body.txt"
+    body.write_text("- one\n")
+    assert prr.post("PROJ-1", str(body)) == "skipped: prior requirements block present on PROJ-1"
+
+
+def test_replace_flag_forwarded_only_when_set(tmp_path, monkeypatch):
+    path = tmp_path / "tracker.json"
+    target = tmp_path / "record.py"
+    out = tmp_path / "argv.txt"
+    target.write_text(f"import sys\nopen({str(out)!r}, 'a').write(repr(sys.argv[1:]) + '\\n')\n")
+    prr.tc.set_field("PROJ", "requirements_review_cmd", f"python3 {target}", path)
+    monkeypatch.setattr(prr.tc, "config_path", lambda: path)
+    body = tmp_path / "body.txt"
+    body.write_text("- one\n")
+    assert prr.post("PROJ-1", str(body)) == "posted: PROJ-1"
+    assert prr.post("PROJ-1", str(body), replace=True) == "posted: PROJ-1"
+    lines = out.read_text().splitlines()
+    assert lines == [repr(["PROJ-1", str(body)]), repr(["PROJ-1", str(body), "--replace"])]
+
+
+def test_cli_replace_flag_forwarded(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "tracker.json"
+    target = tmp_path / "record.py"
+    out = tmp_path / "argv.txt"
+    target.write_text(f"import sys\nopen({str(out)!r}, 'w').write(repr(sys.argv[1:]))\n")
+    prr.tc.set_field("PROJ", "requirements_review_cmd", f"python3 {target}", path)
+    monkeypatch.setattr(prr.tc, "config_path", lambda: path)
+    body = tmp_path / "body.txt"
+    body.write_text("- one\n")
+    assert prr.main(["PROJ-1", str(body), "--replace"]) == 0
+    assert capsys.readouterr().out.strip() == "posted: PROJ-1"
+    assert out.read_text() == repr(["PROJ-1", str(body), "--replace"])
+
+
+def test_cli_bad_third_arg_exits_1():
+    assert prr.main(["PROJ-1", "body.txt", "--force"]) == 1

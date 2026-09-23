@@ -110,13 +110,11 @@ Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <
 
 ## Dev-flow journal (step 8.5)
 
-Append one block to `~/.claude/state/dev-flow-journal.md` (create parent dir if needed). Use values already known this run — no new instrumentation except the read-only `~/.claude/local-marketplace/simo-dev/lib/session_tokens.py` transcript sum. Unknown values → `n/a`.
+Append one block to `~/.claude/state/dev-flow-journal.md` (create parent dir if needed). Use values already known this run — no new instrumentation except the two read-only transcript readers, `~/.claude/local-marketplace/simo-dev/lib/session_tokens.py` (token sum) and `~/.claude/local-marketplace/simo-dev/lib/session_meta.py` (model/effort). Unknown values → `n/a`.
 
 ```bash
 mkdir -p ~/.claude/state
 DATE=$(date -u +%Y-%m-%d)
-MODEL="unknown"                        # no env var exposes the session model id — never fabricate
-EFFORT="unknown"                       # low|medium|high|xhigh|max only if known — never fabricate
 # Each block that runs a plugin script re-binds R: shell state does not survive between
 # Bash calls. This file reaches a shell through the Read tool, which substitutes nothing, so the
 # placeholder arrives raw and the shell expands it — empty in the Bash tool env as measured, so
@@ -157,12 +155,33 @@ TOKENS=$(python3 "$R/lib/session_tokens.py"); TOKENS_RC=$?
 # `if`, not `[ … ] && …`: the short form exits 1 whenever $TOKENS is non-empty, i.e. on the
 # normal path, which would read as a failed block if nothing followed it.
 if [ -z "$TOKENS" ]; then TOKENS="(script did not run — rc $TOKENS_RC, check \$R)"; fi
+# model/effort from the main transcript's last assistant turn (lib/session_meta.py) — the
+# transcript records both, no env var does. Same no-`2>/dev/null` and empty-stdout reasoning
+# as TOKENS above; any failure leaves an honest `unknown`, never a guess.
+META=$(python3 "$R/lib/session_meta.py"); META_RC=$?
+if [ -z "$META" ]; then META="(script did not run — rc $META_RC, check \$R)"; fi
+MODEL="unknown"; EFFORT="unknown"
+if [ "$META_RC" -eq 0 ]; then
+  MODEL=$(printf '%s\n' "$META" | sed -n 's/^model=\([^ ]*\) effort=.*/\1/p')
+  EFFORT=$(printf '%s\n' "$META" | sed -n 's/^model=[^ ]* effort=\([^ ]*\).*/\1/p')
+  MIXED=$(printf '%s\n' "$META" | sed -n 's/.* (mixed: \(.*\))$/ (mixed: \1)/p')
+  if [ -z "$MODEL" ]; then
+    MODEL="unknown (unparseable: $META)"; EFFORT="$MODEL"
+  else
+    MODEL="$MODEL$MIXED"
+    case "$EFFORT" in ""|unknown) EFFORT="unknown (not recorded on last turn)";; esac
+  fi
+else
+  NOTE=$(printf '%s\n' "$META" | sed -n 's/.*(\(.*\))$/\1/p'); [ -n "$NOTE" ] || NOTE="rc $META_RC"
+  MODEL="unknown ($NOTE)"; EFFORT="unknown ($NOTE)"
+fi
 # Print them: shell state dies with this Bash call, so anything not on stdout is unreadable
 # by the time the block below gets written — and that block BRANCHES on $TOKENS_RC, which is
 # a decision, not a transcription. Keep this the last command so the block's own rc is
 # printf's 0. The other variables above are unprinted for the same reason and always have
-# been; only these two are read back by the `- tokens:` line.
-printf 'TOKENS=%s\nTOKENS_RC=%s\n' "$TOKENS" "$TOKENS_RC"
+# been; only the tokens, model and effort values printed here are read back, by the
+# `- tokens:`, `- model:` and `- effort:` lines.
+printf 'TOKENS=%s\nTOKENS_RC=%s\nMODEL=%s\nEFFORT=%s\nMETA=%s\n' "$TOKENS" "$TOKENS_RC" "$MODEL" "$EFFORT" "$META"
 ```
 
 Block format (append verbatim, one blank line before the heading):
@@ -171,8 +190,8 @@ Block format (append verbatim, one blank line before the heading):
 ## $DATE · $REPO · $BRANCH · mode=$MODE
 - ticket: <KEY or "none">
 - task: <one line: type + rough size>
-- model: <$MODEL>
-- effort: <$EFFORT>
+- model: <the printed MODEL, verbatim — the block already turns every non-zero META_RC into `unknown (<reason>)`; never a bare `unknown`>
+- effort: <the printed EFFORT, verbatim — `unknown (not recorded on last turn)` when the last turn carried none; never a bare `unknown`>
 - tokens: <$TOKENS_RC 0 → the `total=` from $TOKENS followed by its parenthesised note verbatim, e.g. `813274 (15 subagent transcripts, 578 lines skipped)`; otherwise `unknown (<the parenthesised note from $TOKENS>)`, never a bare `unknown`>
 - skills used: <$SKILLS>
 - review-loop iterations: <count, or "n/a">
@@ -182,7 +201,7 @@ Block format (append verbatim, one blank line before the heading):
 - notes: <1-2 lines qualitative takeaway>
 ```
 
-An honest `unknown` beats a fake datapoint. `tokens` is auto-derived (on a plain non-SDD task it records the main thread only and says `subagents not captured`). When the script runs at all it leaves one parseable line on stdout whatever the rc, and the note in its parentheses is what makes the `unknown` say why: `4` is "nothing to count" (no session id, or no main transcript), `3` is the script itself crashing — a bug to fix, not a missing transcript. An empty `$TOKENS` is the case the rc cannot describe, because python never reached the module: the guard above turns it into its own note rather than letting it read as one of the other two.
+An honest `unknown` beats a fake datapoint. `model` and `effort` are auto-derived from the main transcript's last assistant turn by `session_meta.py` — `unknown (<reason>)` when it found nothing or failed, with a ` (mixed: …)` suffix on `model` when the session switched models; unlike `- tokens:`, the block already made every decision, so those two lines are pure transcription. `tokens` is auto-derived (on a plain non-SDD task it records the main thread only and says `subagents not captured`). When the script runs at all it leaves one parseable line on stdout whatever the rc, and the note in its parentheses is what makes the `unknown` say why: `4` is "nothing to count" (no session id, or no main transcript), `3` is the script itself crashing — a bug to fix, not a missing transcript. An empty `$TOKENS` is the case the rc cannot describe, because python never reached the module: the guard above turns it into its own note rather than letting it read as one of the other two.
 
 The `N lines skipped` clause counts transcript lines that reached no total: non-JSON, JSON that is not an object, and a non-integer `output_tokens`. It is a coarse signal, not an alarm — the subagent glob is deliberately wide and also matches captured tool output, so a healthy session reports hundreds (the run that produced this contract: 578 skipped, 15 transcripts, all correct). A record with a `usage` object and no `output_tokens` key is a normal record and is not counted, so a drop can also happen without the number moving. Read it as "something in this session's files was not transcript-shaped", and compare it against past entries rather than against zero.
 

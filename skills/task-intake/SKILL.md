@@ -162,7 +162,14 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 python3 "$R/lib/post_requirements_review.py" "<KEY>" "<tmpfile>"
 ```
 
-Announce: `Requirements: <script's stdout line>`.
+**`--replace` rule.** Use this block INSTEAD of the one above (never after it) only when step 7.5's `restart` sent THIS task-intake invocation (counted from its own step 1) back to step 4 or 3 after it had already announced `Requirements: posted: <KEY>` for the same key. A `posted:` line from an earlier task-intake invocation in the same session never counts — a follow-up intake must not overwrite the original ACs. In doubt (e.g. the announce line is no longer in context), no flag.
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/post_requirements_review.py" "<KEY>" "<tmpfile>" --replace
+```
+
+Announce: `Requirements: <script's stdout line>`. `skipped: prior requirements block present on <KEY>` means a previous intake's ACs are kept: announce it as-is, never retry with `--replace` — this run's direction and ACs still reach the ticket via step 5.5's comment.
 
 **Prompt mode** (no key yet — step 5 may create one): hold the drafted block for this session; the call happens at step 5.5 instead, once the key (if any) is resolved — see step 5.5.
 
@@ -191,7 +198,7 @@ Default is **always `N`**, even if the task brief implies a ticket. On explicit 
 
 Runs always, both modes, right after step 5 resolves (so the ticket key — if any, including one just created in step 5 — is known). No key, or `comment_cmd` unconfigured for its prefix: `post_tracker_comment.py` (`lib/post_tracker_comment.py`) handles both as a silent no-op on its own — nothing here needs to special-case them.
 
-Body = the direction approved at step 4's gate: the candidate directions with the chosen one marked, the final `Choices made:` list, and any `⚠` fuzzy-signal lines that were surfaced. Write it to a temp file, then:
+Body = the direction approved at step 4's gate: the candidate directions with the chosen one marked, the final `Choices made:` list, and any `⚠` fuzzy-signal lines that were surfaced. If step 4.5 announced `skipped: prior requirements block present`, also append the Requirements / AC block drafted there, under its own heading. Write it to a temp file, then:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
@@ -207,7 +214,14 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 python3 "$R/lib/post_requirements_review.py" "<KEY-or-empty>" "<tmpfile>"
 ```
 
-Announce: `Requirements: <script's stdout line>`.
+Only under step 4.5's `--replace` rule, use this block instead:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/post_requirements_review.py" "<KEY-or-empty>" "<tmpfile>" --replace
+```
+
+Announce: `Requirements: <script's stdout line>` (a `skipped: prior requirements block present` result is handled as in step 4.5).
 
 ### 5.6. Take ticket in charge
 

@@ -13,13 +13,17 @@ ticket's prefix -- the same no-op-if-unconfigured contract every other
 tracker_config field already has.
 
 Usage:
-    post_requirements_review.py <TICKET_KEY> <BODY_FILE>
+    post_requirements_review.py <TICKET_KEY> <BODY_FILE> [--replace]
+
+--replace is forwarded verbatim to the configured command, which otherwise
+refuses to overwrite a requirements block already on the ticket.
 
 Prints exactly one status line to stdout. Always exits 0 (via main()) --
 writing back requirements is best-effort, never a gate a caller should fail
 on:
     skipped: no ticket key
     skipped: requirements_review_cmd not configured for <PREFIX>
+    skipped: prior requirements block present on <KEY>   (configured command exited 4)
     posted: <KEY>
     failed: requirements_review_cmd exited <rc> for <KEY>
 """
@@ -33,24 +37,27 @@ sys.path.insert(0, str(HERE))
 import tracker_config as tc  # noqa: E402
 
 
-def post(key: str, body_file: str) -> str:
+def post(key: str, body_file: str, replace: bool = False) -> str:
     if not key:
         return "skipped: no ticket key"
     prefix = key.split("-")[0].upper()
     path = tc.config_path()
     if not tc.get_field(prefix, "requirements_review_cmd", path):
         return f"skipped: requirements_review_cmd not configured for {prefix}"
-    rc = tc.run_field(prefix, "requirements_review_cmd", [key, body_file], path)
+    args = [key, body_file] + (["--replace"] if replace else [])
+    rc = tc.run_field(prefix, "requirements_review_cmd", args, path)
     if rc == 0:
         return f"posted: {key}"
+    if rc == 4:
+        return f"skipped: prior requirements block present on {key}"
     return f"failed: requirements_review_cmd exited {rc} for {key}"
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: post_requirements_review.py <TICKET_KEY> <BODY_FILE>", file=sys.stderr)
+    if len(argv) not in (2, 3) or (len(argv) == 3 and argv[2] != "--replace"):
+        print("usage: post_requirements_review.py <TICKET_KEY> <BODY_FILE> [--replace]", file=sys.stderr)
         return 1
-    print(post(argv[0], argv[1]))
+    print(post(argv[0], argv[1], replace=len(argv) == 3))
     return 0
 
 
