@@ -33,8 +33,8 @@ comment the dev flow posts (direction, plan, tests performed,
 implementation summary, and mr-followup's post-merge verification
 notes) routes through it. Body always on a file, never a positional
 arg or heredoc: a positional/heredoc body hung the `jira` CLI 15+
-minutes with no output (observed 2026-08-25). private/jira_comment.py
-implements this contract for JIRA — configure with:
+minutes with no output (observed 2026-08-25). jira_comment.py (not shipped
+in the published plugin) implements this contract for JIRA — configure with:
 
     tracker_config.py set <PREFIX> comment_cmd "python3 <path to jira_comment.py>"
 
@@ -50,8 +50,8 @@ exiting 0 on success (already linked counts as success — idempotent, not an
 error). simo-dev:task-intake step 2.5 is the sole consumer — recording a
 dependency between sub-tasks split from the same umbrella (or between a
 sub-task and an already-known external blocker), best-effort like
-transition_cmd. private/jira_link.py implements this contract for JIRA — configure
-with:
+transition_cmd. jira_link.py (not shipped in the published plugin) implements
+this contract for JIRA — configure with:
 
     tracker_config.py set <PREFIX> link_cmd "python3 <path to jira_link.py>"
 
@@ -61,8 +61,8 @@ assign_cmd is invoked as `<CMD> <key>` (a single ticket key, no other args) and
 must assign the ticket to whatever user the configured command itself resolves
 as "current", exiting 0 on success (already assigned to that user counts as
 success — idempotent, not an error). simo-dev:task-intake step 5.6 is the sole
-consumer, best-effort like transition_cmd. private/jira_assign.py (a sibling
-task in this same plan) implements this contract for JIRA — configure with:
+consumer, best-effort like transition_cmd. jira_assign.py (not shipped in the
+published plugin) implements this contract for JIRA — configure with:
 
     tracker_config.py set <PREFIX> assign_cmd "python3 <path to jira_assign.py>"
 
@@ -75,9 +75,9 @@ the ticket already carries a block written by a previous run, the command must
 leave it untouched and exit 4, unless --replace is given.
 lib/post_requirements_review.py is the sole consumer, reached from
 simo-dev:task-intake step 4.5 (ticket mode, key known immediately) and step
-5.5 (prompt mode, key resolved later). private/jira_requirements_review.py
-implements this contract for JIRA by appending a block to the ticket
-description, never touching the author's text — configure with:
+5.5 (prompt mode, key resolved later). jira_requirements_review.py (not shipped
+in the published plugin) implements this contract for JIRA by appending a block
+to the ticket description, never touching the author's text — configure with:
 
     tracker_config.py set <PREFIX> requirements_review_cmd "python3 <path to jira_requirements_review.py>"
 

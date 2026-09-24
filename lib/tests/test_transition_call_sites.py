@@ -1,16 +1,16 @@
 """Pins the trailing flags on every `transition_cmd "` call site in the skill bodies.
 
-The Jira binding (`private/jira_forward_transition.py`) lifts a Blocked flag only with
-`--clear-blocked` and otherwise exits 8. The post-push CodeReview calls (commit, mr-followup)
-and mr-followup's post-merge call must pass it; task-intake's step 5.6 "In Progress" call must
-not, and must branch on rc 8 (BLOCKED) with an `if` whose `elif` is the generic non-zero
-WARNING, or a Blocked ticket also reads as a failed transition. Only a grep in a plan checked
-this before, never a test.
+The Jira binding (`jira_forward_transition.py`, not shipped in the published plugin) lifts a
+Blocked flag only with `--clear-blocked` and otherwise exits 8. The post-push CodeReview calls
+(commit, mr-followup) and mr-followup's post-merge call must pass it; task-intake's step 5.6
+"In Progress" call must not, and must branch on rc 8 (BLOCKED) with an `if` whose `elif` is
+the generic non-zero WARNING, or a Blocked ticket also reads as a failed transition. Only a
+grep in a plan checked this before, never a test.
 
 Scans every `*.md` under `skills/` for the literal `transition_cmd "`, so a new call site
 spelled that way there changes the count and fails loudly. A call site elsewhere (`agents/`,
 `private/skills/`) or spelled differently is not seen. The GitHub binding side of the same
-contract is `private/tests/test_github_transition_call_site_flags.py`.
+contract is `test_github_transition_call_site_flags.py`, not shipped in the published plugin.
 """
 import re
 from collections import Counter

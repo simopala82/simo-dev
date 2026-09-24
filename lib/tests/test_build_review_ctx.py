@@ -8,9 +8,8 @@ import tempfile
 from pathlib import Path
 
 LIB = Path(__file__).parent.parent / "build_review_ctx.py"
-FAKE = Path(__file__).parent / "fixtures" / "fake_jira.py"
 FIX = Path(__file__).parent / "fixtures"
-JIRA_SCOPE_FETCH = Path(__file__).parent.parent.parent / "private" / "jira_scope_fetch.py"
+FAKE_SCOPE_CMD = FIX / "fake_scope_cmd.py"
 TRACKER_CONFIG = Path(__file__).parent.parent / "tracker_config.py"
 
 
@@ -26,7 +25,6 @@ def run_build(meta_name, tracker_config_path=None):
     try:
         subprocess.run(["git", "init", tmp], check=True, capture_output=True)
         env = dict(os.environ)
-        env["DEV_REVIEW_JIRA_BIN"] = f"{sys.executable} {FAKE}"
         if tracker_config_path:
             env["SIMO_DEV_TRACKER_CONFIG"] = str(tracker_config_path)
         result = subprocess.run(
@@ -42,7 +40,7 @@ def _configured_tracker(tmp_path):
     path = tmp_path / "tracker.json"
     subprocess.run(
         [sys.executable, str(TRACKER_CONFIG), "set", "PROJ", "scope_fetch_cmd",
-         f"{sys.executable} {_cache_safe_path(tmp_path, JIRA_SCOPE_FETCH)}", "--config", str(path)],
+         f"{sys.executable} {_cache_safe_path(tmp_path, FAKE_SCOPE_CMD)}", "--config", str(path)],
         check=True,
     )
     return path
@@ -95,7 +93,6 @@ def test_repo_flag_uses_repo_path_not_cwd(tmp_path):
     repo_b = _init_repo_with_no_tracker_marker(tmp_path / "repo-b")
 
     env = dict(os.environ)
-    env["DEV_REVIEW_JIRA_BIN"] = f"{sys.executable} {FAKE}"
     result = subprocess.run(
         [sys.executable, str(LIB), str(FIX / "review_meta_gitlab.json"), "--repo", str(repo_b)],
         capture_output=True, text=True, env=env, cwd=str(repo_a),

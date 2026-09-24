@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Test double for the scope_fetch_cmd contract: `<key> <comments>` -> stdout.
 
-Mirrors fake_jira.py's canned behavior, but on the NEW positional contract
-(jira_scope.py invokes the configured scope_fetch_cmd this way directly --
-it no longer knows about `jira issue view --plain --comments`, that shape
-now lives only inside jira_scope_fetch.py).
+Mirrors fake_jira.py's canned behavior (a private fixture, not shipped in the
+published plugin), but on the NEW positional contract (jira_scope.py invokes
+the configured scope_fetch_cmd this way directly -- it no longer knows about
+`jira issue view --plain --comments`, that shape now lives only inside
+jira_scope_fetch.py, also not shipped in the published plugin).
 
 - KEY containing 'FAIL' -> exit 2 (issue not found)
 - KEY containing 'SLOW' -> sleep 5s (to trip the caller timeout)

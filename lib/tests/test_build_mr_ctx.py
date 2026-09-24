@@ -8,9 +8,8 @@ import tempfile
 from pathlib import Path
 
 LIB = Path(__file__).parent.parent / "build_mr_ctx.py"
-JIRA_SCOPE_FETCH = Path(__file__).parent.parent.parent / "private" / "jira_scope_fetch.py"
+FAKE_SCOPE_CMD = Path(__file__).parent / "fixtures" / "fake_scope_cmd.py"
 TRACKER_CONFIG = Path(__file__).parent.parent / "tracker_config.py"
-FAKE = Path(__file__).parent / "fixtures" / "fake_jira.py"
 
 
 def _cache_safe_path(tmp_path, src):
@@ -78,11 +77,10 @@ def test_ticket_summary_fetched_via_jira_scope_light_mode(tmp_path):
     tracker_cfg = tmp_path / "tracker.json"
     subprocess.run(
         [sys.executable, str(TRACKER_CONFIG), "set", "PROJ", "scope_fetch_cmd",
-         f"{sys.executable} {_cache_safe_path(tmp_path, JIRA_SCOPE_FETCH)}", "--config", str(tracker_cfg)],
+         f"{sys.executable} {_cache_safe_path(tmp_path, FAKE_SCOPE_CMD)}", "--config", str(tracker_cfg)],
         check=True,
     )
     env = dict(os.environ)
-    env["DEV_REVIEW_JIRA_BIN"] = f"{sys.executable} {FAKE}"
     env["SIMO_DEV_TRACKER_CONFIG"] = str(tracker_cfg)
     result = subprocess.run(
         [sys.executable, str(LIB), "--repo", str(repo)],
