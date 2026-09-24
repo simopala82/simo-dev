@@ -7,7 +7,7 @@ non-zero and `skills/commit/SKILL.md` step 7 routes that non-zero into its minim
 fallback body, so the MR is created with a degraded description; `json_field.py
 "$MRTMP/mr_pres.json" title` on the same missing file yields an empty MR title.
 
-Three mechanical assertions, no classification, in the order the functions appear below:
+Four mechanical assertions, no classification, in the order the functions appear below:
   1. inside a shell block, any dereference of MRTMP is preceded by a `MRTMP=` binding in the
      same block. Order, not presence: a binding below the first use is unbound at the use.
   2. every `MRTMP=` binding names the shared `/tmp/claude_mr_` prefix. The key is
@@ -18,6 +18,9 @@ Three mechanical assertions, no classification, in the order the functions appea
   3. every `MRTMP=` binding within one file is byte-identical to the others in that file. The
      prefix is not the constraint — the whole key is — so `/tmp/claude_mr_$(basename "$PWD")_…`
      satisfies assertion 2 and still resolves elsewhere.
+  4. every `MRTMP=` binding derives `<repo>` from `--path-format=absolute --git-common-dir`.
+     `basename` of a toplevel or of `$W` is the worktree directory name, so twin worktrees in
+     different repos sharing a directory name and a branch collide (observed 2026-09-24).
 
 Scope is the fence tag, not a judgment about content: `.md` fenced blocks tagged `bash` or
 `sh`, plus whole `.sh` files. This differs from `test_plugin_root_form.py`, which treats every
@@ -67,8 +70,9 @@ test, and the two `MERMAID=$(python3 .../json_field.py "$MRTMP/..." mermaid)` pr
 that file and in `skills/commit/SKILL.md`. Those sites rely on their file's convention sentence instead, and this
 guard cannot see them. Assertion 3 inherits that blind spot across flows, not only within a
 file: it compares per file, so a file holding exactly ONE binding is compared to nothing and a
-lone divergent-but-prefixed key passes all three (constructed and confirmed 2026-08-22 by adding
-such a fence to `skills/mr-followup/lib/pipeline-scripts.md`). That file is the live instance —
+lone divergent-but-prefixed key passes assertions 1-3 (constructed and confirmed 2026-08-22 by adding
+such a fence to `skills/mr-followup/lib/pipeline-scripts.md`; assertion 4, added later, catches
+one whose `<repo>` segment is not the common-dir form). That file is the live instance —
 it has no binding in a shell fence at all, and its agreement with `skills/commit/SKILL.md` rests
 on a THIRD spelling, written in prose, that keys on the substituted `<worktree-abs>` and
 `printf '%s' "<branch>"` literals instead of reading the cwd. Grouping the files by intended form
@@ -190,8 +194,8 @@ def test_mrtmp_bindings_are_uniform_within_a_file():
     `/tmp/claude_mr_$(basename "$PWD")_…` passes the prefix assertion and still loses the file.
     Uniformity per file is the forbid-style form of that: the two files legitimately use different
     forms — `skills/commit/SKILL.md` keys on the task worktree `$W`, `skills/mr-review/SKILL.md` on
-    the ambient toplevel — so the comparison cannot be tree-wide. Compared stripped, so an indented
-    copy of the same binding is not an offender.
+    the ambient cwd's common git dir — so the comparison cannot be tree-wide. Compared stripped, so
+    an indented copy of the same binding is not an offender.
     """
     offenders = []
     for path in _scanned_files():
@@ -209,5 +213,34 @@ def test_mrtmp_bindings_are_uniform_within_a_file():
     assert not offenders, (
         f"{len(offenders)} file(s) bind MRTMP more than one way — a divergent key is a divergent "
         f"directory, so a later block loses the file an earlier one wrote:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+REPO_NAME_FORM = re.compile(
+    r'/tmp/claude_mr_\$\(basename "\$\(dirname "\$\(git (?:-C "\$W" )?'
+    r'rev-parse --path-format=absolute --git-common-dir\)"\)"\)_'
+)
+
+
+def test_mrtmp_bindings_key_on_the_real_repo_name():
+    """The `<repo>` segment must come from the common git dir, not from a toplevel or `$W`.
+
+    `basename` of a worktree's toplevel is the worktree directory name, so two worktrees in
+    different repos that share a directory name and a branch resolve one scratch dir and
+    overwrite each other's files (observed 2026-09-24 on twin `mr_presentation` MRs). The whole
+    segment is matched right after the prefix, not the flags alone: dropping `dirname` yields
+    `.git` for every repo, and dropping `--path-format=absolute` yields `.` from a main checkout.
+    """
+    offenders = [
+        f"{path.relative_to(PLUGIN_ROOT)}:{start + offset}: {line.strip()[:80]}"
+        for path in _scanned_files()
+        for start, lines in _shell_regions(path)
+        for offset, line in enumerate(lines)
+        if BINDS_MRTMP.match(line) and not REPO_NAME_FORM.search(line)
+    ]
+    assert not offenders, (
+        f"{len(offenders)} MRTMP binding(s) do not derive the repo name from the common git dir — "
+        f"a worktree directory name is not a repo name, and twin worktrees collide:\n  "
         + "\n  ".join(offenders)
     )

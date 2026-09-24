@@ -145,7 +145,12 @@ def files_from_plan_dir(repo: str, base: str) -> list[str]:
         rel = f"docs/plans/{Path(plan_path).name}"
         if _file_exists_at_ref(repo, f"origin/{base}", rel):
             continue
-        paths |= files_from_plan(Path(plan_path).read_text())
+        try:
+            text = Path(plan_path).read_text()
+        except FileNotFoundError:
+            # an untracked plan another session moved away after the glob listed it
+            continue
+        paths |= files_from_plan(text)
     return sorted(paths)
 
 

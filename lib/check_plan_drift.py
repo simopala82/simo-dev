@@ -79,7 +79,12 @@ def plans_mentioning(repo: str, base: str, changed_files: list[str]) -> list[tup
         rel = f"docs/plans/{Path(plan_path).name}"
         if _file_exists_at_ref(repo, f"origin/{base}", rel):
             continue
-        declared = files_from_plan(Path(plan_path).read_text())
+        try:
+            text = Path(plan_path).read_text()
+        except FileNotFoundError:
+            # an untracked plan another session moved away after the glob listed it
+            continue
+        declared = files_from_plan(text)
         for f in sorted(declared & changed):
             pairs.append((rel, f))
     return pairs

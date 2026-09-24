@@ -1,15 +1,21 @@
-## 1.11.0 (2026-09-23)
+## 1.12.0 (2026-09-24)
 
 ### Features
-- feat(simo-dev): pin reviewer effort high and record real model/effort in journal
+- feat(simo-dev): do in-scope improvements in-task, record them in an Also-fixed ledger
 
 ### Bug Fixes
-- fix(simo-dev): set autopilot auto-merge via the merge API and check the answer
-- fix(simo-dev): treat Closed as terminal no-op in jira_forward_transition
-- fix(simo-dev): refuse to silently replace a prior requirements block
-- fix(oss-extract): widen publish freshness gate to cover exporter script
+- fix(simo-dev): key MRTMP on the real repo name, not the worktree dir
+- fix: skip plans that vanish between glob and read
+- fix(simo-dev): make Jira Blocked unblock opt-in via --clear-blocked
+- fix(simo-dev): autopilot robust_merge tri-state, merge API only, cancel armed auto-merge
+- fix(simo-dev): render the changed files list once in the MR prompt
 
 ### Other Changes
-- chore(simo-dev): release 0.1.181
-- Merge branch 'fix/jira-fwd-closed-terminal-noop' into 'master'
-- chore(simo-dev): release 0.1.180
+- Merge branch 'test/transition-call-site-flags' into 'master'
+- test(simo-dev): pin transition_cmd call-site flags
+- chore(simo-dev): release 0.1.186
+- Merge branch 'fix/mrtmp-real-repo-name' into 'master'
+- test: cover jira_scope empty-string fallback in review prompt
+- chore(simo-dev): release 0.1.183
+- Merge branch 'fix/autopilot-robust-merge-tri-state' into 'master'
+- test(mr-presentation): make jira_scope fallback assertion discriminating

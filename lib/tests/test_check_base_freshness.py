@@ -240,6 +240,23 @@ def test_main_plan_files_unreadable_plan_returns_2(tmp_path, monkeypatch):
     assert cbf.main(["--repo", str(tmp_path), "--plan-files"]) == 2
 
 
+def test_main_plan_files_skips_plan_vanished_between_glob_and_read(tmp_path, monkeypatch, capsys):
+    """A concurrent session can carry/mv an untracked plan out of docs/plans/
+    after the glob listed it. That plan must be skipped, not turn the whole
+    check into rc 2 -- rc 2 is read as 'no change' by the callers, so the real
+    overlap of the remaining plans would never surface (silent fail-open)."""
+    clone = _make_repo(tmp_path, advance="overlap", feat_commit=False)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    real = plans / "real.md"
+    real.write_text("- Modify: `shared.py`\n")
+    ghost = plans / "ghost.md"
+    monkeypatch.setattr(cbf.glob, "glob", lambda pattern: [str(ghost), str(real)])
+    monkeypatch.setattr(cbf, "fetch_base", lambda repo, base: None)
+    assert cbf.main(["--repo", str(clone), "--base", "master", "--plan-files"]) == 1
+    assert "shared.py" in capsys.readouterr().out
+
+
 def test_files_from_plan_dir_excludes_merged_plans(tmp_path):
     """A plan file already present in origin/<base> (already merged) has its
     Files: bullets excluded; a plan file that does NOT yet exist there (the

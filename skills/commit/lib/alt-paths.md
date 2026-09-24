@@ -3,6 +3,13 @@
 When `EXISTING_MR` is non-empty, the cascade is shorter:
 - Steps 7-9 skipped (no body generation, no create call).
 - Step 10 fires (auto-enters `simo-dev:mr-followup`).
+- The push already happened (step 5) and its commit message was the Also-fixed record, so clear the ledger before step 10 (`LEDGER_FAILED` → warn, continue, re-run it once fixed):
+
+```bash
+W="<absolute path of the task worktree>"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/also_fixed_ledger.py" clear --repo "$W" || echo "LEDGER_FAILED rc=$?"
+```
 
 This is the "follow-up commit to an open MR" flow.
 
@@ -20,6 +27,7 @@ Triggered by the detection above — an out-of-flow commit on a protected branch
    - `edit-message` → take the user's replacement message, re-present this gate.
    - `abort` → stop; nothing committed (staged files stay staged).
 4. Steps 6-10 never run: the branch is its own target, no MR exists.
+5. The Also-fixed ledger is not used here: step 3's block and step 4's `commit-done` are both skipped; the commit message lists In-scope improvements from the session's own context, as before.
 
 Nothing skips this gate — pushing to a protected branch always asks (CLAUDE.md rule). `--no-mr` is a no-op here (there is no MR step to skip).
 

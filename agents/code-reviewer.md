@@ -38,7 +38,7 @@ One finding per line:
 ```
 
 `severity ∈ {low, medium, high, critical}`:
-- `low` — style/cosmetic (informational, never auto-fixed)
+- `low` — style/cosmetic (the consumer decides whether to apply it, per canonical-flow "In-scope improvements")
 - `medium` — code smell, missing test coverage, minor bug, perf concern
 - `high` — correctness bug, security issue, data-loss risk
 - `critical` — blocks merge

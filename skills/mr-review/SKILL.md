@@ -35,7 +35,7 @@ DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|
 All artifacts in the per-session tmp dir — re-derive in every Bash block, `review_`-prefixed names (no collision with a dev-commit flow in the same dir). The re-derivation is not optional for the inline commands in the bullets below either: each runs as its own Bash call, so it needs the same line prefixed, and the derivation reads the **ambient cwd** — it must stay the repo under review across every block, or the key silently changes:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 mkdir -p "$MRTMP"
 ```
 
@@ -56,7 +56,7 @@ MR mode (the two bullets above) is not subject to this guard — it diffs an ext
 Before fetching, make sure the ticket's prefix has a `scope_fetch_cmd` configured — `build_review_ctx.py` below silently returns an empty `jira_scope` otherwise:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 SOURCE_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/review_meta.json" source_branch headRefName "")
 KEY=$(python3 "$R/lib/derive_ticket_key.py" "$SOURCE_BRANCH" --cwd "$(git rev-parse --show-toplevel)")
@@ -70,7 +70,7 @@ fi
 An `ASK_SCOPE_FETCH_CMD prefix=<P> key=<K>` line means no `scope_fetch_cmd` is configured for that prefix yet. Ask the user which command fetches a plain-text ticket scope for that prefix — contract: `<CMD> <key> <comments>`, prints plain text to stdout — offering an explicit "skip" choice. On a concrete answer: `python3 "$R/lib/tracker_config.py" set "$PREFIX" scope_fetch_cmd "<answer>"`. On "skip": `python3 "$R/lib/tracker_config.py" set "$PREFIX" scope_fetch_cmd -` (the sentinel `jira_scope.py` treats as "declined, no error, no re-ask"). No `ASK_SCOPE_FETCH_CMD` line (no key, or `CMD` already set) → proceed straight to the block below with no question.
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/build_review_ctx.py" "$MRTMP/review_meta.json" --repo "$(git rev-parse --show-toplevel)" > "$MRTMP/review_ctx.json"
 python3 "$R/lib/mr_presentation.py" --mode review \
@@ -82,7 +82,7 @@ Never capture this output into a shell variable (`VAR=$(...)`) to relay it onwar
 Read `$MRTMP/review_request.json` directly (Read tool) to get `prompt`, `schema`, `agent_type`, `model`; dispatch the Agent tool, which should call `StructuredOutput` and return the validated object (may include `ticket_drift` + `drift_note`) — write it to `$MRTMP/review_pres.json`. If `StructuredOutput` wasn't available and the agent returned its answer as plain text instead, extract the outermost `{...}` JSON object from that text (strip markdown code fences if present) and write *that* to `$MRTMP/review_pres.json` — a well-formed object here is not itself a failure. Then run:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/review_pres.json"
 ```
@@ -90,7 +90,7 @@ python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/review_pres
 (rc 0: HTML-unescapes any entities the agent introduced — e.g. `--&gt;` / `&lt;br/&gt;` from the plain-text path above — and confirms the required keys are present. Unconditional: it runs on the `StructuredOutput` path too, so a no-op only when the input carries no entities. In the `mermaid` field a quote entity inside a still-quoted label becomes `#quot;` rather than a bare `"`, which would nest quotes inside the label and stop mermaid parsing; escaped label *delimiters* keep being restored to bare `"`.) Then assemble:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --assemble --mode review \
   --presentation-json "$MRTMP/review_pres.json" --context-file "$MRTMP/review_ctx.json" > "$MRTMP/review_body.md"
@@ -103,7 +103,7 @@ Same rule as step 4's request file: redirect straight to a file, never through a
 If `ticket_drift` is `true` (from `review_pres.json`) AND `jira_key` non-empty (from `review_ctx.json`) → fetch the full ticket; else skip:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 rm -f "$MRTMP/review_jira_full.txt"
 JIRA_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/review_ctx.json" jira_key "")
@@ -118,7 +118,7 @@ fi
 An `ASK_SCOPE_FETCH_CMD` line here means the same ask-and-remember as step 4, for a prefix that turned out unconfigured only now (step 4 already asked for most cases — this only fires when step 4 had no key, or the user chose "skip" there and drift escalation later needs a real answer). `-z "$CMD"` alone does not re-ask a prior "skip": the sentinel `-` is a non-empty string, so a previously declined prefix is correctly left alone. **The fetch below runs as a separate block, after any question above is answered** — folding it into the same block as the check would run the fetch immediately with `CMD` still empty on a first-time ask, before the answer is saved, silently losing the drift section for that run:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 JIRA_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/review_ctx.json" jira_key "")
 DRIFT=$(python3 "$R/lib/json_field.py" "$MRTMP/review_pres.json" ticket_drift false)
@@ -160,7 +160,7 @@ Frontmatter: `mr_iid`, `mr_url` (empty in branch-vs-default), `jira_key` (empty 
 Lint each non-resolved finding's mermaid before writing:
 
 ```bash
-MRTMP="/tmp/claude_mr_$(basename "$(git rev-parse --show-toplevel)")_$(git branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 printf '%s' "$PER_FINDING_MERMAID" > "$MRTMP/finding_mmd.txt"
 python3 "$R/lib/mr_presentation.py" --lint-mermaid \

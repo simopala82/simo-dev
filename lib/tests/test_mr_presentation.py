@@ -346,7 +346,26 @@ def test_review_prompt_jira_scope_fallback_when_absent():
     ], env=base)
     assert rc == 0, f"stderr: {err}"
     request = json.loads(out)
-    assert "(no JIRA ticket linked)" in request["prompt"]
+    assert ":\n(no JIRA ticket linked)\n" in request["prompt"]
+    assert "{jira_scope}" not in request["prompt"]
+
+
+def test_review_prompt_jira_scope_fallback_when_empty(tmp_path):
+    import os
+    base = dict(os.environ)
+    base.pop("DEV_MR_PRES_MODEL", None)
+    ctx = json.loads((FIX / "simple_ctx.json").read_text())
+    ctx["jira_scope"] = ""
+    ctx_file = tmp_path / "empty_jira_scope_ctx.json"
+    ctx_file.write_text(json.dumps(ctx))
+    rc, out, err = run_lib([
+        "--mode", "review",
+        "--diff-file", str(FIX / "simple_diff.txt"),
+        "--context-file", str(ctx_file),
+    ], env=base)
+    assert rc == 0, f"stderr: {err}"
+    request = json.loads(out)
+    assert ":\n(no JIRA ticket linked)\n" in request["prompt"]
     assert "{jira_scope}" not in request["prompt"]
 
 
@@ -557,6 +576,42 @@ def test_prepare_create_mode_includes_real_changed_files_value(tmp_path):
     assert "src/foo.py" in request["prompt"]
     assert "src/foo_test.py" in request["prompt"]
     assert "(no file list)" not in request["prompt"]
+
+
+def test_prepare_create_mode_renders_changed_files_exactly_once(tmp_path):
+    changed = "src/foo.py\nsrc/foo_test.py"
+    ctx = json.loads((FIX / "simple_ctx.json").read_text())
+    ctx["changed_files"] = changed
+    ctx_path = tmp_path / "ctx_with_changed_files.json"
+    ctx_path.write_text(json.dumps(ctx))
+    rc, out, err = run_lib([
+        "--mode", "create",
+        "--diff-file", str(FIX / "simple_diff.txt"),
+        "--context-file", str(ctx_path),
+    ])
+    assert rc == 0, f"stderr: {err}"
+    prompt = json.loads(out)["prompt"]
+    assert prompt.count(changed) == 1
+    assert "Changed files (full list, untruncated):\n" + changed in prompt
+
+
+def test_prompt_templates_use_each_placeholder_at_most_once():
+    import re
+    for template in (mr_presentation.PROMPT_CREATE, mr_presentation.PROMPT_REVIEW):
+        text = template.read_text()
+        for placeholder in set(re.findall(r"\{[a-z_]+\}", text)):
+            assert text.count(placeholder) == 1, f"{template.name}: {placeholder}"
+
+
+def test_render_prompt_does_not_expand_placeholders_inside_substituted_values():
+    changed = "src/foo.py\nsrc/foo_test.py"
+    context = {
+        "commit_log": "abc1234 fix: render {changed_files} once",
+        "changed_files": changed,
+    }
+    prompt = mr_presentation.render_prompt(mr_presentation.PROMPT_CREATE.read_text(), "", context)
+    assert prompt.count(changed) == 1
+    assert "abc1234 fix: render {changed_files} once" in prompt
 
 
 def test_assemble_includes_files_to_review_when_key_files_present(tmp_path):

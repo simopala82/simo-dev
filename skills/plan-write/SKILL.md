@@ -77,6 +77,8 @@ Logged in the author's own claim-hygiene notes (keep a similar file if you have 
 
 When a Task's Files touched are UI-related AND an approved mockup exists upstream (referenced from the design spec this plan is built from), reuse the existing `**Interfaces:** Consumes:` line to name it — `Consumes: docs/specs/YYYY-MM-DD-<topic>-mockup.html — approved mockup, implementation must match` — and add one extra step after the last TDD step (`minimal impl → PASS`): "Verify visual match against the mockup". This states the acceptance criterion only, no screenshot tool prescribed — the mechanism (a screenshot skill, a browser tool, manual inspection) is whatever the target repo already has. No new template field is introduced. No upstream mockup → no `Consumes:`/verification addition; the task proceeds exactly as any other task would today.
 
+An In-scope improvement known at plan time gets its own task, titled exactly `### Task N: In-scope improvement — <what>` — mandatory form: `simo-dev:plan-execute` records such a task in the Also-fixed ledger by this prefix (`docs/canonical-flow.md` "In-scope improvements").
+
 ## No placeholders
 
 These are plan failures — never write them:

@@ -78,10 +78,20 @@ directly below. Also not bundled: an `Explore` subagent definition (`~/.claude/a
    > run cascades into `simo-dev:commit` (review-loop step 8 exceptions apply); unresolved
    > findings still gate. A clean run lets the next `simo-dev:commit` skip its review pre-flight,
    > until a file changes again.
-4. **Personal identity stays yours.** Tracker user and git author name belong in your own
+4. **The In-scope improvement rule** — paste this into your own `CLAUDE.md` too: it must be
+   always-on, and it also governs edits made outside any skill, where no skill body is loaded.
+
+   > **In-scope improvements**: a change touching only files already in the task's diff or plan is
+   > done in the same task and declared under "Also fixed" — never spawned as a follow-up. Ask first
+   > when it needs a decision or would swell the diff noticeably. Dead code in a file in the diff is
+   > deleted when `rg -uu` finds no other use, asked about when search can't verify it, and only
+   > mentioned outside the diff. An ad-hoc one made in the flow is recorded in the Also-fixed
+   > ledger as soon as it is made, or no commit message or MR body declares it. Detail:
+   > `docs/canonical-flow.md` "In-scope improvements".
+5. **Personal identity stays yours.** Tracker user and git author name belong in your own
    `CLAUDE.md` too, but they aren't part of this checklist — set them to your own values, there's
    nothing to copy from the plugin.
-5. For everything else, see [`docs/canonical-flow.md`](docs/canonical-flow.md).
+6. For everything else, see [`docs/canonical-flow.md`](docs/canonical-flow.md).
 
 ### Install from GitHub
 

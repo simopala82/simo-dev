@@ -13,7 +13,7 @@ Resolve every open decision in a plan or design before implementation.
 - Ask **one question per turn**. Multiple choice when applicable.
 - For each question, provide a **recommended answer** and the trade-off in one line.
 - If a question can be answered by exploring the codebase, **explore instead of asking**.
-- YAGNI ruthlessly — cut unnecessary features from every design.
+- YAGNI ruthlessly — cut unnecessary features from every design. It applies to features in the design, not to In-scope improvements (`docs/canonical-flow.md` "In-scope improvements").
 - Stop when no open branches remain.
 
 ## Domain capture (inline)

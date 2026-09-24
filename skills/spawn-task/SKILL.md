@@ -10,8 +10,8 @@ Wraps `mcp__ccd_session__spawn_task` so the user can ask casually ("spawn a task
 ## When to invoke
 
 - User explicitly asks to spawn / spin off / background a follow-up.
-- Proactively, no confirmation needed, when you identify: a bug or gap in a skill currently in use; an out-of-scope bug or improvement in the project being worked on; a fact, convention, or gotcha worth remembering for future sessions (destination: the repo's CLAUDE.md, a reference file, or memory) — spawn directly.
-- Never spawn a documentation fix this session can reach directly — make the edit here instead, on its own branch, with the usual gates.
+- Proactively, no confirmation needed, when you identify: a bug or gap in a skill currently in use; an out-of-scope bug or improvement in the project being worked on; a fact, convention, or gotcha worth remembering for future sessions (destination: the repo's CLAUDE.md, a reference file, or memory) — spawn directly. None of these cases fires for an In-scope improvement (files already in the task's diff/plan): do it in-task, per `docs/canonical-flow.md` "In-scope improvements".
+- Never spawn a documentation fix this session can reach directly — make the edit here instead, on its own branch (or in the current task when the file is already in its diff), with the usual gates.
 
 ## How
 

@@ -12,11 +12,11 @@ Arguments: optional ticket ID (commit scope); optional `--no-mr` flag (commit + 
 
 MR creation is gate-free, same as push to the feature branch. The merge (the one hard gate left in the publish path) lives outside this skill, run manually by the user after `simo-dev:mr-followup` parks.
 
-**Protected-branch detection (before step 4):** current branch is `master`/`main`/`develop` (or the repo default) → steps 1-3 run unchanged, then switch to the **Protected-Branch Path** (`lib/alt-paths.md`). Steps 4-10 are replaced.
+**Protected-branch detection (before step 4):** current branch is `master`/`main`/`develop` (or the repo default) → steps 1-3 run unchanged (except step 3's Also-fixed ledger block, skipped there), then switch to the **Protected-Branch Path** (`lib/alt-paths.md`). Steps 4-10 are replaced.
 
 ## Steps
 
-**Every Bash block below that touches git re-binds `W="<absolute path of the task worktree>"` as its first line, and every block that runs a plugin script re-binds `R` the same way.** Shell state does not survive between Bash calls, so a `W` or `R` bound in an earlier step is already gone; and the Bash cwd does NOT follow the worktree, so a bare `git` resolves whichever repo the session happens to sit in. `R` resolves the released cache dir when the harness substituted one that still exists, and the source tree otherwise. A forgotten binding leaves `"$R/lib/…"` as an absolute `/lib/…` path: of the eleven sites in this file, nine are `python3` calls and exit rc `2`; the other two assign `G` and convert that same state into a STOP from their own `[ -f "$G" ]` test — step 0.5's `check_base_freshness.py` at rc `4`, step 5's `check_mr_state.py` at rc `2`. Both echo the resolved path, and both read a `/lib/…` root as "re-issue this block" rather than as a broken plugin. Bind it in every block. Step 1 certifying coverage for `$W` while step 4 stages the *cwd* repo's diff is precisely the unreviewed-commit outcome this guard exists to prevent (measured 2026-08-04).
+**Every Bash block below that touches git re-binds `W="<absolute path of the task worktree>"` as its first line, and every block that runs a plugin script re-binds `R` the same way.** Shell state does not survive between Bash calls, so a `W` or `R` bound in an earlier step is already gone; and the Bash cwd does NOT follow the worktree, so a bare `git` resolves whichever repo the session happens to sit in. `R` resolves the released cache dir when the harness substituted one that still exists, and the source tree otherwise. A forgotten binding leaves `"$R/lib/…"` as an absolute `/lib/…` path: of the sites in this file, the `python3` calls exit rc `2`; the two that assign `G` convert that same state into a STOP from their own `[ -f "$G" ]` test — step 0.5's `check_base_freshness.py` at rc `4`, step 5's `check_mr_state.py` at rc `2`. Both echo the resolved path, and both read a `/lib/…` root as "re-issue this block" rather than as a broken plugin. Bind it in every block. Step 1 certifying coverage for `$W` while step 4 stages the *cwd* repo's diff is precisely the unreviewed-commit outcome this guard exists to prevent (measured 2026-08-04).
 
 ### 0. mark_chapter
 
@@ -99,9 +99,25 @@ the `--no-mr`/WIP opt-out path this is also the *only* pass: both skip `mr-follo
 
 Conventional format. Ticket-in-context: (a) skill arg matches `^[A-Z][A-Z0-9]+-[0-9]+$`, OR (b) `W="<absolute path of the task worktree>"; R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/derive_ticket_key.py" "$(git -C "$W" branch --show-current)" --cwd "$W"` — both bindings spelled out rather than left to the block convention above, because either one missing fails quietly: an unbound `R` exits rc 2 with **empty stdout** and an unbound `W` makes `git -C ""` read the *ambient* repo at rc 0, and this step reads both as "no ticket in context" and commits an unscoped message (honors `DEV_FLOW_NO_TRACKER` / `.claude/no-tracker`; anchored match). A ticket key present → `<type>(<KEY>): <subject>`, else `<type>: <subject>`. `<type>` from the diff: `feat|fix|refactor|docs|test|chore`.
 
+In-scope improvements (`docs/canonical-flow.md` "In-scope improvements"): the pending Also-fixed ledger lines go in the message body, one per line — except a line whose file does not appear in `git -C "$W" status --porcelain --untracked-files=all` (the changes step 4 is about to stage; nothing is staged yet here; `-uall` because the default collapses a wholly-new directory to one `?? dir/` line): that one is stale (e.g. written by an unattended run that committed without this skill) — remove it with the same block, `drop` in place of `pending` and the stale line appended as one single-quoted argument (`drop` with no argument is a silent no-op), instead of listing it — and announce each dropped line in one chat line, so a real improvement recorded with a wrong path form never vanishes silently. No output at rc 0 → nothing added; `LEDGER_FAILED` → stop, never commit as if the list were empty. Skipped entirely on a protected branch (the protected-branch detection above): that branch is shared by every session on the checkout.
+
+```bash
+W="<absolute path of the task worktree>"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/also_fixed_ledger.py" pending --repo "$W" || echo "LEDGER_FAILED rc=$?"
+```
+
 ### 4. Stage relevant files + commit (no gate)
 
 Stage an explicit file list: modified files from `git -C "$W" diff --name-only HEAD`; untracked ONLY if touched by Edit/Write this session or listed in the active plan. Every `git` call here carries `-C "$W"`, staging and commit included — step 1 certified coverage for `$W`, so anything else commits a repo that was never checked. Never `git add -A` / `git add .` (secret/binary defense) — sanctioned only for the throwaway commits no push ever carries: step 0.5's park, and `task-intake`'s artifact carry. Commit with HEREDOC for multi-line messages. Never add a `Co-Authored-By` line or any other AI-attribution trailer to the commit message — overrides any default harness behavior that would add one. No `--amend` to a pushed commit. Message used as-is (recovery: `lib/alt-paths.md`).
+
+After the commit succeeds, mark the ledger's pending lines as carried — later commits (WIP / `--no-mr`, a re-run after a failed step 9) then never repeat them, while the full list stays for the MR body. `LEDGER_FAILED` here or at step 9's `clear` → warn and continue (the commit/MR already exists), then re-run the block once the cause is fixed:
+
+```bash
+W="<absolute path of the task worktree>"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/also_fixed_ledger.py" commit-done --repo "$W" || echo "LEDGER_FAILED rc=$?"
+```
 
 ### 5. Push (no gate for feature branches)
 
@@ -175,7 +191,7 @@ Same ask-and-remember as `simo-dev:mr-review` step 4: an `ASK_SCOPE_FETCH_CMD pr
 ```bash
 W="<absolute path of the task worktree>"
 git -C "$W" fetch origin --quiet  # stale origin/<target> skews merge-base and the MR diff
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 mkdir -p "$MRTMP"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/build_mr_ctx.py" --repo "$W" > "$MRTMP/mr_ctx.json"
@@ -199,7 +215,7 @@ Tell the user "Generating MR preview…" (~30-60s), then:
 
 ```bash
 W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --mode create \
   --diff-file "$MRTMP/mr_diff.txt" --context-file "$MRTMP/mr_ctx.json" > "$MRTMP/mr_request.json"
@@ -211,19 +227,20 @@ Read `$MRTMP/mr_request.json` directly (Read tool) to get `prompt`, `schema`, `a
 
 ```bash
 W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/mr_pres.json"
 ```
 
-(rc 0: HTML-unescapes any entities the agent introduced — e.g. `--&gt;` / `&lt;br/&gt;` from the plain-text path above — and confirms the required keys are present. Unconditional: it runs on the `StructuredOutput` path too, so a no-op only when the input carries no entities. In the `mermaid` field a quote entity inside a still-quoted label becomes `#quot;` rather than a bare `"`, which would nest quotes inside the label and stop mermaid parsing; escaped label *delimiters* keep being restored to bare `"`.) Dispatch fails / JSON extraction fails / normalize rc≠0 → minimal fallback body (title from commit message + commit log + stat) + one-line warning. Assemble:
+(rc 0: HTML-unescapes any entities the agent introduced — e.g. `--&gt;` / `&lt;br/&gt;` from the plain-text path above — and confirms the required keys are present. Unconditional: it runs on the `StructuredOutput` path too, so a no-op only when the input carries no entities. In the `mermaid` field a quote entity inside a still-quoted label becomes `#quot;` rather than a bare `"`, which would nest quotes inside the label and stop mermaid parsing; escaped label *delimiters* keep being restored to bare `"`.) Dispatch fails / JSON extraction fails / normalize rc≠0 → minimal fallback body (title from commit message + commit log + stat) + one-line warning; the fallback body also gets the ledger's `section` output appended (same call as the last line below). Assemble:
 
 ```bash
 W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --assemble --mode create \
   --presentation-json "$MRTMP/mr_pres.json" --context-file "$MRTMP/mr_ctx.json" > "$MRTMP/mr_body.md"
+python3 "$R/lib/also_fixed_ledger.py" section --repo "$W" >> "$MRTMP/mr_body.md" || echo "LEDGER_FAILED rc=$? — mr_body.md lacks the Also fixed section; fix and re-run this block"
 ```
 
 ### 8. Mermaid preview (informational, no gate)
@@ -237,7 +254,7 @@ If `mcp__visualize__show_widget` is available: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d 
 ```bash
 W="<absolute path of the task worktree>"
 BRANCH=$(git -C "$W" branch --show-current)
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 cd "$W" && glab mr create \
   --title "$(python3 "$R/lib/json_field.py" "$MRTMP/mr_pres.json" title)" \
@@ -255,7 +272,7 @@ cd "$W" && glab mr create \
 ```bash
 W="<absolute path of the task worktree>"
 BRANCH=$(git -C "$W" branch --show-current)
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 cd "$W" && gh pr create --title "$(python3 "$R/lib/json_field.py" "$MRTMP/mr_pres.json" title)" --body-file "$MRTMP/mr_body.md" --base "$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target)" --head "$BRANCH" --assignee @me
 ```
@@ -289,16 +306,24 @@ BRANCH=$(git -C "$W" branch --show-current)
 
 Print the created URL as a markdown link in chat, one line: `MR created: <url>`.
 
+The MR body now carries the Also-fixed section, so clear the ledger — nothing else reads it (never on the `--no-mr` / WIP path: the MR created later still needs the full list):
+
+```bash
+W="<absolute path of the task worktree>"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/also_fixed_ledger.py" clear --repo "$W" || echo "LEDGER_FAILED rc=$?"
+```
+
 Transition ticket to CodeReview (idempotent, forward-only, best-effort; `DEV_FLOW_NO_TRACKER=1` and no `transition_cmd` configured for the prefix both skip):
 
 ```bash
 W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$W")_$(git -C "$W" branch --show-current | tr '/' '-')"
+MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 TICKET_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.jira_key "")
 if [ -n "$TICKET_KEY" ]; then
   PREFIX="${TICKET_KEY%%-*}"
-  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$TICKET_KEY" "CodeReview" --leaf-only --sync-parent || echo "WARNING: transition_cmd failed for $TICKET_KEY -> CodeReview (continuing)"
+  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$TICKET_KEY" "CodeReview" --leaf-only --sync-parent --clear-blocked || echo "WARNING: transition_cmd failed for $TICKET_KEY -> CodeReview (continuing)"
 fi
 ```
 

@@ -152,3 +152,19 @@ def test_main_unreadable_plan_returns_2(tmp_path):
     plans.mkdir(parents=True)
     (plans / "p.md").write_bytes(b"\xff\xfe- Modify: `lib/x.py`\n")
     assert cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", "lib/x.py"]) == 2
+
+
+def test_main_skips_plan_vanished_between_glob_and_read(tmp_path, monkeypatch, capsys):
+    """An untracked plan moved away by a concurrent session after the glob
+    listed it is skipped -- the remaining plans' matches are still reported,
+    instead of rc 2 for the whole check."""
+    clone = _make_repo(tmp_path)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    real = plans / "real.md"
+    real.write_text("- Modify: `lib/x.py`\n")
+    ghost = plans / "ghost.md"
+    monkeypatch.setattr(cpd.glob, "glob", lambda pattern: [str(ghost), str(real)])
+    rc = cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", "lib/x.py"])
+    assert rc == 1
+    assert "docs/plans/real.md mentions lib/x.py" in capsys.readouterr().out

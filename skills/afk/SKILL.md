@@ -81,6 +81,7 @@ While AFK is active, auto-answer every gate and **append each answer to the deci
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
 - **Any other fork with no clear recommendation** → most conservative / most reversible option, logged.
+- **An In-scope improvement needing a decision** (`docs/canonical-flow.md` "In-scope improvements") → skip it, log `[deferred (needs decision)] …` — never answered as a `[fork]`.
 
 ## 3. Hand-off override
 
@@ -100,7 +101,7 @@ Append-only; survives compaction. Path: `docs/plans/<plan-basename>-afk-log.md` 
 
 ## 6. Park (terminal state — before merge)
 
-When `simo-dev:mr-followup` settles: register the completion ping (bg-tasks), disarm (`afk_state.py stop`, stop re-arming wakeups), print the 3-bucket recap (decisions / ⚠ blockers retried / 🔖 deferred spawns) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
+When `simo-dev:mr-followup` settles: register the completion ping (bg-tasks), disarm (`afk_state.py stop`, stop re-arming wakeups), print the 4-bucket recap (decisions / ⚠ blockers retried / 🔖 deferred spawns / `deferred (needs decision)` In-scope improvements) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
 
 > Full park procedure + recap wording: `lib/wake-park.md` — load when parking.
 

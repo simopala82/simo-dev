@@ -223,10 +223,8 @@ def render_prompt(template: str, diff: str, context: dict) -> str:
         "{jira_scope}": context.get("jira_scope", "") or "(no JIRA ticket linked)",
         "{diff_truncated}": truncated,
     }
-    result = template
-    for placeholder, value in substitutions.items():
-        result = result.replace(placeholder, value)
-    return result
+    pattern = re.compile("|".join(re.escape(p) for p in substitutions))
+    return pattern.sub(lambda m: substitutions[m.group(0)], template)
 
 
 def prepare_request(diff: str, context: dict, mode: str) -> dict:

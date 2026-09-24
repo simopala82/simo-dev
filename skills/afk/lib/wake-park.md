@@ -28,7 +28,8 @@ RESUME: <current step + enough context to continue cold>
 - [fork] no rec at X → conservative: in-place, reversible
 - [⚠ blocker] SSO expired on glab call → re-auth ok, retried
 - [review-loop] 2 iters, 3 medium fixed, exited clean
-- [🔖 deferred spawn] follow-up: extract helper — accept manually
+- [🔖 deferred spawn] follow-up in another repo: bump the shared client — accept manually
+- [deferred (needs decision)] In-scope improvement: `src/a.py` rename helper — two reasonable names
 - [push] MR !123 created, pipeline running
 ```
 
@@ -47,9 +48,9 @@ When `simo-dev:mr-followup` settles (pipeline green or findings handled per its 
    > Why the tag and `printf`, never `echo`: logged in the author's own notes (worth keeping a similar log), section "`bg-tasks`: registering into a queue nothing reads".
 
 2. Disarm — in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"`, since shell state does not survive between Bash calls: `python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` (writes a `stopped` entry for THIS repo+branch; a stale wakeup now exits at §0) and stop re-arming `ScheduleWakeup`. This file is Read-loaded, so `R` lands on the source tree here while the reader in `skills/afk/SKILL.md` §0 resolves the released cache — see that section's note on why the entry format has to stay frozen across a release boundary, and on which way the mismatch fails.
-3. Print the recap in three buckets from the decision-log — **decisions made** (numbered) / **⚠ blockers retried** / **🔖 deferred spawns awaiting your click** — plus MR link + pipeline status:
+3. Print the recap in four buckets from the decision-log — **decisions made** (numbered) / **⚠ blockers retried** / **🔖 deferred spawns awaiting your click** / **`deferred (needs decision)` In-scope improvements** — plus MR link + pipeline status:
 
-> "Implementation complete and on the MR, unattended. Decisions: 1) … 2) … . Blockers retried: … . Deferred spawns: … . MR: <link> (pipeline <status>). Reply `merge` to do the final merge, or a number to revisit that choice."
+> "Implementation complete and on the MR, unattended. Decisions: 1) … 2) … . Blockers retried: … . Deferred spawns: … . In-scope improvements deferred (needs decision): … . MR: <link> (pipeline <status>). Reply `merge` to do the final merge, or a number to revisit that choice."
 
 Then stop and wait. `merge` → the ask is satisfied (user typed it) → run the merge. A number → revisit that decision, re-present.
 

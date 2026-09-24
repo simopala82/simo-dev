@@ -7,7 +7,7 @@ Hard rules:
 - Impact paragraph is technical-neutral, not marketing. The reviewer should learn WHAT changed, not WHY it's great.
 - Write in simple English: short words, short sentences. Keep technical terms the reviewer already knows, cut AI tells (em-dash overuse, rule-of-three, promotional language, overly parallel phrasing).
 - Why-it-matters bullets: business / risk / cost / rollout-safety framing ONLY. If no honest framing exists, return an empty array — never generic filler like "improves maintainability".
-- key_files: list ONLY the files central to understanding this diff, never every changed file. Order them the way the reviewer should read them. Give each a short role (e.g. "core logic", "test", "config", "docs"). Every path MUST appear in {changed_files} or the diff — never invent one. If the diff is a single obvious file, return an empty array rather than padding it with unrelated files.
+- key_files: list ONLY the files central to understanding this diff, never every changed file. Order them the way the reviewer should read them. Give each a short role (e.g. "core logic", "test", "config", "docs"). Every path MUST appear in the Changed files list below or the diff — never invent one. If the diff is a single obvious file, return an empty array rather than padding it with unrelated files.
 - Do NOT include code-quality opinions, praise, or critique. The reviewer is here to judge, not to read your judgment.
 
 Choose the diagram type (set diagram_type and write matching mermaid):
