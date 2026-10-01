@@ -249,3 +249,28 @@ def test_main_reports_detached_head_as_the_real_cause_not_missing_repo(tmp_path,
         afk.main(["is-stopped", "--repo", str(tmp_path)])
     assert exc_info.value.code == 2
     assert "no current branch" in capsys.readouterr().err
+
+
+def test_arm_and_status_non_ascii_repo_id_on_cp1252(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "feat/ü", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@gitlab.example:tëam/→★.git"], check=True)
+    state = tmp_path / "afk"
+    env = {"AFK_STATE_FILE": str(state)}
+    arm = run_cp1252(LIB, ["arm", "--repo", str(repo)], extra_env=env)
+    assert arm.returncode == 0, arm.stderr.decode("utf-8", "replace")
+    assert arm.stdout.decode("utf-8") == "afk: active gitlab.example/tëam/→★:feat/ü\n"
+    assert state.read_bytes().startswith("gitlab.example/tëam/→★:feat/ü:active:".encode("utf-8"))
+    st = run_cp1252(LIB, ["status", "--repo", str(repo)], extra_env=env)
+    assert st.returncode == 0, st.stderr.decode("utf-8", "replace")
+    assert st.stdout.decode("utf-8") == "active\n"
+
+
+def test_bad_repo_error_keeps_non_ascii_path_on_cp1252_stderr(tmp_path):
+    from cp1252_run import run_cp1252
+    missing = tmp_path / "gone→★ü"
+    res = run_cp1252(LIB, ["arm", "--repo", str(missing)], extra_env={"AFK_STATE_FILE": str(tmp_path / "afk")})
+    assert res.returncode == 2
+    assert f"--repo: not a directory: {missing}".encode("utf-8") in res.stderr

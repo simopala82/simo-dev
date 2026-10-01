@@ -19,7 +19,7 @@ Usage:
 
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
 supports_subtasks, post_merge_state, post_merge_state_no_deploy, scope_fetch_cmd, comment_cmd,
-link_cmd, assign_cmd, requirements_review_cmd.
+link_cmd, assign_cmd, requirements_review_cmd, next_subtask_cmd.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -83,6 +83,33 @@ to the ticket description, never touching the author's text — configure with:
 
 Same source-working-tree-path rule as the fields above it.
 
+next_subtask_cmd is invoked as `<CMD> <leaf-key> [--resolved-at <state>]` and
+prints one JSON line, exiting 0 on success; empty stdout means nothing to
+propose:
+
+    {"parent": str|null, "parent_status": str|null, "parent_complete": bool,
+     "ready": [{"key", "summary", "status", "components"}],
+     "pending": [{"key", "summary", "status", "reason"}]}
+
+`parent` is the leaf's umbrella (null when the leaf has no parent, or its
+parent has no sub-tasks). A sibling (never the leaf itself) is `ready` when it
+has not started (Backlog/Refinement/To Do-class states), is unassigned or
+assigned to the current user (matched by a stable user id, never by email),
+and every "is blocked by" blocker is Closed or at/past --resolved-at (default
+Done). Otherwise it is `pending`, `reason` = the first of `started`,
+`assigned-to-other`, `blocked-by:<KEY>[,<KEY>...]`. Done and Closed siblings,
+and siblings whose state is outside the binding's known states (or that cannot
+be read), appear in neither list. `parent_complete` = at least one non-Closed
+sub-task exists and every one has a known state at/past Done: an unknown or
+unreadable one keeps it false, fail-safe, since it may still be in work.
+simo-dev:mr-followup step 8.6 is the sole consumer.
+jira_next_subtask.py (not shipped in the published plugin) implements this
+contract for JIRA — configure with:
+
+    tracker_config.py set <PREFIX> next_subtask_cmd "python3 <path to jira_next_subtask.py>"
+
+Same source-working-tree-path rule as the fields above it.
+
 `get` prints the value (empty string if the prefix/field is not
 configured) and always exits 0 on a well-formed config — an absent entry
 is a normal outcome, not an error, mirroring derive_ticket_key.py's
@@ -138,6 +165,7 @@ FIELDS = (
     "link_cmd",
     "assign_cmd",
     "requirements_review_cmd",
+    "next_subtask_cmd",
 )
 
 

@@ -83,9 +83,9 @@ def main(argv: list[str]) -> int:
         paths, default = rest[:-1], rest[-1]
 
     try:
-        raw = sys.stdin.read() if src == "-" else open(src).read()
+        raw = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
         data = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         sys.stderr.write(f"json_field.py: {e}\n")
         return 1
 
@@ -99,4 +99,11 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    # stdin moves with stdout: a cp1252-decoded stdin re-encoded as UTF-8 would be mojibake.
+    if sys.stdin:
+        sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))

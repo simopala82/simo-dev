@@ -95,7 +95,9 @@ def run_gh_graphql(query: str, owner: str, repo: str, num: int, cursor: str | No
     ]
     if cursor is not None:
         cmd.extend(["-F", f"cursor={cursor}"])
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # errors="replace": a stray non-UTF-8 byte degrades to U+FFFD instead of raising; one that breaks
+    # the JSON reaches the fail-closed UNAVAILABLE path below.
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         unverifiable(f"Error: gh api graphql failed (exit {result.returncode}).")
@@ -179,4 +181,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     main()

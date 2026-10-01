@@ -2,7 +2,7 @@
 
 Loaded on demand from `task-intake` step 3 when a pre-flight check fires.
 
-The cache-copy section below covers step 3's two **wrong-repo** verdicts. It does **not** cover a linked worktree of a legitimate repo that merely sits under a `plugins/` path — its remote is the owning repo's, so resolving a marketplace source is the wrong move; step 3 forwards that one to step 6, which moves it, leaves it alone, or stops and asks. The other two sections are unrelated to either verdict.
+The cache-copy section below covers step 3's two **wrong-repo** verdicts. It does **not** cover a linked worktree of a legitimate repo that merely sits under a `plugins/` path — its remote is the owning repo's, so resolving a marketplace source is the wrong move; step 3 forwards that one to step 6, which stops and asks (row 4). The other two sections are unrelated to either verdict.
 
 ## Cache/marketplace copy detected
 

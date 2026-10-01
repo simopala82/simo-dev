@@ -145,7 +145,7 @@ def _hooks_look_dead(session: str, skill: str) -> bool:
     if not f.exists():
         return False
     session_logged = False
-    for line in f.read_text(errors="surrogateescape").splitlines():
+    for line in f.read_text(encoding="utf-8", errors="surrogateescape").splitlines():
         parts = _skill_log_fields(line)
         if parts is None:
             continue
@@ -175,17 +175,11 @@ def _live_entries(now: float) -> list[tuple[str, str, int]]:
     # bails on the same read, so the store never heals. Reading leniently keeps check()
     # answering and lets the garbage fail _parse and drop out at the next compaction.
     # The write side has to match: see the encode note in _compact_if_large.
-    for line in f.read_text(errors="surrogateescape").splitlines():
+    for line in f.read_text(encoding="utf-8", errors="surrogateescape").splitlines():
         entry = _parse(line.strip()) if line.strip() else None
         if entry and now - entry[2] <= PRUNE_AFTER_SECONDS:
             entries.append(entry)
     return entries
-
-
-def _write(entries: list[tuple[str, str, int]]) -> None:
-    f = _state_file()
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("".join(f"{r}:{s}:{t}\n" for r, s, t in entries))
 
 
 def _lookup(rid: str, session: str, now: float) -> int | None:
@@ -238,7 +232,7 @@ def _compact_if_large(now: float) -> None:
     try:
         # surrogateescape here too, for the same reason as _live_entries: a strict count on
         # an undecodable store would bail before the compaction that heals it.
-        with f.open(errors="surrogateescape") as fh:
+        with f.open(encoding="utf-8", errors="surrogateescape") as fh:
             lines = sum(1 for _ in fh)
         if lines <= _COMPACT_AT_LINES:
             return
@@ -268,7 +262,7 @@ def _compact_if_large(now: float) -> None:
         # and a strict encode raises UnicodeEncodeError — a ValueError, not an OSError, so it
         # would escape record() and leave the temp file behind on every call.
         tmp.write_text("".join(f"{r}:{s}:{t}\n" for (r, s), t in sorted(newest.items())),
-                       errors="surrogateescape")
+                       encoding="utf-8", errors="surrogateescape")
         tmp.replace(f)
     except (OSError, ValueError):
         # The record is already on disk by now. A failed compaction must not turn a written
@@ -300,7 +294,7 @@ def record(repo: str, session: str) -> int:
     # review takes minutes — but it does surface in scripted runs and in this mechanism's
     # own tests. Fixing it properly means floats in the state-file format, hence a migration.
     repair = _needs_leading_newline(f)
-    with f.open("a") as fh:
+    with f.open("a", encoding="utf-8", errors="surrogateescape") as fh:
         if repair:
             fh.write("\n")
         fh.write(f"{rid}:{session}:{int(now)}\n")
@@ -538,4 +532,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    # stdout keeps surrogateescape: it echoes paths from argv, which may not be valid UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main())

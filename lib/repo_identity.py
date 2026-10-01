@@ -9,8 +9,8 @@ repo-id = normalized origin URL, fallback: absolute path of the main repo
 `repo_path` resolves identity from that directory instead of the process cwd
 (fixes worktree cwd divergence — see CLAUDE.md gotcha).
 
-Importers: lib/afk_state.py, plus a private-only module not part of the public
-export.
+Importers: lib/afk_state.py, lib/review_marker.py, plus a private-only module
+not part of the public export.
 """
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ from pathlib import Path
 
 def _git(*args: str, repo_path: str | None = None) -> str | None:
     try:
-        out = subprocess.run(["git", *args], capture_output=True, text=True, check=True, cwd=repo_path)
+        out = subprocess.run(["git", *args], capture_output=True, check=True, cwd=repo_path,
+                             encoding="utf-8", errors="surrogateescape")
         return out.stdout.strip() or None
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None

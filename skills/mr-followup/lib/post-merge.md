@@ -1,6 +1,6 @@
-# Post-merge procedure — verification notes, cleanup, journal
+# Post-merge procedure — verification notes, cleanup, journal, next sub-task / parent close
 
-Loaded on demand from `mr-followup` steps 8 / 8.5, once the user has confirmed the merge.
+Loaded on demand from `mr-followup` steps 8 / 8.5 / 8.6, once the user has confirmed the merge.
 
 ## Verification notes ticket comment
 
@@ -221,3 +221,32 @@ REPO=$(basename "$(dirname "$(git -C "<main-checkout-abs>" rev-parse --path-form
 BRANCH="<the merged branch name>"
 python3 "$R/lib/skill_log.py" prune --repo "$REPO" --branch "$BRANCH"
 ```
+
+## Next sub-task / parent close (step 8.6)
+
+Runs after the journal. Skip entirely when step 8 printed no `post-merge:` line (no `KEY`). The worktree is gone by now, so reuse `<KEY>`, `<PREFIX>` and `<TARGET>` as literals from that line:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/tracker_config.py" run "<PREFIX>" next_subtask_cmd "<KEY>" --resolved-at "<TARGET>" || echo "WARNING: next_subtask_cmd failed for <KEY> (continuing)"
+```
+
+`--resolved-at "<TARGET>"`: the sub-task just merged counts as a resolved blocker at its post-merge state, so a sibling waiting only on it is already ready. Read the one JSON line (contract: `lib/tracker_config.py` docstring, `next_subtask_cmd`) and pick the first matching case. One gate per run, never a loop. Whatever case matches, a `[jira-next] ... not in STATE_ORDER or unreadable` stderr note is reported in one line with its keys: the parent cannot reach the close gate until an unknown state is calibrated in the binding (an unreadable key needs a re-check instead).
+
+1. **Nothing to propose** — no JSON line (empty stdout, or only the WARNING above), `"parent": null`, empty `ready` and `pending` with `parent_complete` false, or `parent_complete` true with the parent already at/past Done (or Closed) → say nothing more.
+2. **Parent close** — `parent_complete` true and `parent_status` not already at/past Done (or Closed) → y/N gate, default N: name the parent, say every sub-task is Done and ask whether the feature was verified as a whole and the parent should be closed (a per-sub-task check does not confirm the parts work together). On `y`, `<PARENT>` = the JSON's `parent`:
+
+   ```bash
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+   python3 "$R/lib/tracker_config.py" run "<PREFIX>" transition_cmd "<PARENT>" "Done" --clear-blocked || echo "WARNING: transition_cmd failed for <PARENT> -> Done (continuing)"
+   ```
+
+   No `--leaf-only` (the key is the umbrella) and no `--sync-parent`. On N, nothing else happens: the umbrella stays where the sync left it.
+3. **Next sub-task** — non-empty `ready` → resolve the repo for the first entry: the directories next to the main checkout (`dirname <main-checkout-abs>`) whose name appears as a whole word, case-insensitive, in the entry's `summary` or `components`, and that are a git checkout root (`git -C <dir> rev-parse --show-toplevel` resolves to the same directory as `<dir>` — compare directories, not strings: it resolves symlinks); exactly one match → that path, otherwise unresolved. Then a y/N gate, default N, showing the parent, the entry's key and summary, the resolved repo path (or "unresolved"), plus one line with the other `ready` keys and one line summarising `pending` as `key (reason)`. On `y`:
+   - repo unresolved → ask the user for the repo root first;
+   - `mcp__ccd_session__spawn_task` not yet callable → run `ToolSearch` `select:mcp__ccd_session__spawn_task` once before the fork below, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available;
+   - `mcp__ccd_session__spawn_task` available → `title` `Intake <key>`; `tldr` one sentence; `cwd` the resolved repo root (a real repo root, never a subdirectory); `prompt` = the spawned-task marker line (session language, same rule as `simo-dev:task-intake`'s `lib/handoff-spawn.md`, first sub-bullet of its `prompt` bullet), then an instruction to run `simo-dev:task-intake <key>`, the parent key, and the just-merged sibling key and MR URL as context;
+   - not available → print `simo-dev:task-intake <key>` for the user to start by hand.
+4. **Only pending** — empty `ready`, not complete → one line listing `pending` as `key (reason)`.
+
+Example (hypothetical keys): after `PROJ-12` merges at `Ready for Testing`, a JSON with `"ready": [{"key": "PROJ-13", ...}]` and `"pending": [{"key": "PROJ-14", "reason": "blocked-by:PROJ-13"}]` offers one chip for `PROJ-13` and mentions `PROJ-14 (blocked-by:PROJ-13)`.

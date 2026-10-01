@@ -4,8 +4,11 @@ The Jira binding (`jira_forward_transition.py`, not shipped in the published plu
 Blocked flag only with `--clear-blocked` and otherwise exits 8. The post-push CodeReview calls
 (commit, mr-followup) and mr-followup's post-merge call must pass it; task-intake's step 5.6
 "In Progress" call must not, and must branch on rc 8 (BLOCKED) with an `if` whose `elif` is
-the generic non-zero WARNING, or a Blocked ticket also reads as a failed transition. Only a
-grep in a plan checked this before, never a test.
+the generic non-zero WARNING, or a Blocked ticket also reads as a failed transition. The
+post-merge parent close (mr-followup `lib/post-merge.md`, step 8.6) moves the umbrella to
+"Done" with `--clear-blocked` alone: no `--leaf-only` (the key IS the umbrella) and no
+`--sync-parent` (it has no parent to sync). Only a grep in a plan checked this before, never a
+test.
 
 Scans every `*.md` under `skills/` for the literal `transition_cmd "`, so a new call site
 spelled that way there changes the count and fails loudly. A call site elsewhere (`agents/`,
@@ -23,6 +26,7 @@ CALL = 'transition_cmd "'
 CODEREVIEW_FLAGS = "--leaf-only --sync-parent --clear-blocked ||"
 INTAKE_TAIL = '"In Progress" --sync-parent; rc=$?'
 INTAKE = "skills/task-intake/SKILL.md"
+POST_MERGE = "skills/mr-followup/lib/post-merge.md"
 
 
 def call_sites():
@@ -35,14 +39,15 @@ def call_sites():
 
 
 def _codereview_sites():
-    return [(f"{p}#{n}", line) for n, (p, line) in enumerate(call_sites(), 1) if p != INTAKE]
+    return [(f"{p}#{n}", line) for n, (p, line) in enumerate(call_sites(), 1) if p not in (INTAKE, POST_MERGE)]
 
 
-def test_exactly_four_call_sites():
+def test_exactly_five_call_sites():
     assert Counter(p for p, _ in call_sites()) == {
         "skills/commit/SKILL.md": 1,
         "skills/mr-followup/SKILL.md": 2,
         INTAKE: 1,
+        POST_MERGE: 1,
     }
 
 
@@ -72,3 +77,17 @@ def test_intake_blocked_branch_precedes_warning():
     blocked = re.search(r'^if \[ "\$rc" -eq 8 \]', after_call, re.M)
     warning = re.search(r'^elif \[ "\$rc" -ne 0 \]', after_call, re.M)
     assert blocked and warning and blocked.start() < warning.start()
+
+
+def test_parent_close_site_is_gated_done_without_leaf_only():
+    [line] = [line for p, line in call_sites() if p == POST_MERGE]
+    assert '"Done" --clear-blocked ||' in line
+    assert "--leaf-only" not in line
+    text = (PLUGIN_ROOT / POST_MERGE).read_text()
+    assert "next_subtask_cmd" in text
+
+
+def test_post_merge_step_prints_literals_for_step_8_6():
+    """Step 8.6 runs after the worktree is gone and skips without step 8's `post-merge:` line."""
+    text = (PLUGIN_ROOT / "skills/mr-followup/SKILL.md").read_text()
+    assert 'echo "post-merge: KEY=$KEY PREFIX=$PREFIX TARGET=$TARGET"' in text

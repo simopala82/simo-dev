@@ -8,7 +8,8 @@ Decision 3), and the unwritable-stderr-scratch-file test (the scratch file itsel
 longer exists -- subprocess.run captures stderr in-memory).
 
 What each case pins down (see the design spec's exit-code contract):
-  0 terminal status | 1 refused to start | 3 no pipeline exists |
+  0 terminal status | 1 refused to start |
+  3 no pipeline exists (after the ceiling, or at once as NO CI CONFIG) |
   4 timed out with a pipeline still transitional |
   5 the read that hit the ceiling failed, so the state is unverified
 """
@@ -103,6 +104,82 @@ def test_no_pipeline_exits_rc3(tmp_path):
     r = _run(tmp_path, "empty")
     assert r.returncode == 3, r.stdout + r.stderr
     assert "NO PIPELINE" in r.stdout
+
+
+NOCI_SLOW = {"POLL_NOPIPE_MAX_WAIT": "60", "POLL_MAX_WAIT": "60"}
+
+
+def test_no_ci_config_exits_rc3_on_the_first_read(tmp_path):
+    """The old path would wait the 60s ceiling and blow the 10s timeout."""
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "empty", counter=counter, timeout=10,
+             env=dict(NOCI_SLOW, FAKE_GLAB_API_MODE="noconfig"))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NO CI CONFIG" in r.stdout
+    assert "NO PIPELINE for" not in r.stdout
+    assert counter.read_text().splitlines().count("call") == 1
+
+
+def test_custom_local_ci_config_path_and_branch_are_url_encoded(tmp_path):
+    """The fake only answers `404 File Not Found` for the exactly-encoded endpoint;
+    anything else is `404 Commit Not Found`, which must not fast-path."""
+    api_log = tmp_path / "api.log"
+    r = _run(tmp_path, "empty", timeout=10,
+             env=dict(NOCI_SLOW, FAKE_GLAB_API_MODE="noconfig",
+                      FAKE_GLAB_CI_CONFIG_PATH="ci/main.yml", FAKE_GLAB_API_LOG=str(api_log)))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NO CI CONFIG" in r.stdout
+    assert "projects/:id/repository/files/ci%2Fmain.yml?ref=fix%2Fsome-branch" in api_log.read_text()
+
+
+def test_empty_string_ci_config_path_falls_back_to_the_default_file(tmp_path):
+    api_log = tmp_path / "api.log"
+    r = _run(tmp_path, "empty", timeout=10,
+             env=dict(NOCI_SLOW, FAKE_GLAB_API_MODE="noconfig",
+                      FAKE_GLAB_CI_CONFIG_PATH="", FAKE_GLAB_API_LOG=str(api_log)))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NO CI CONFIG" in r.stdout
+    assert "repository/files/.gitlab-ci.yml?ref=" in api_log.read_text()
+
+
+@pytest.mark.parametrize("api_mode,api_calls", [
+    ("config_present", 2), ("commit_missing", 2), ("autodevops", 1), ("remote_config_path", 1),
+    ("url_config_path", 1), ("no_config_key", 1), ("no_autodevops_key", 1), ("api_error", 1)])
+def test_ambiguous_probe_keeps_the_ceiling_and_probes_once(tmp_path, api_mode, api_calls):
+    counter = tmp_path / "calls"
+    api_log = tmp_path / "api.log"
+    r = _run(tmp_path, "empty", counter=counter,
+             env={"FAKE_GLAB_API_MODE": api_mode, "FAKE_GLAB_API_LOG": str(api_log)})
+    if api_mode in ("remote_config_path", "url_config_path"):
+        probed = api_log.read_text() if api_log.exists() else ""
+        assert "repository/files/" not in probed, "remote config path probed as a local file"
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NO PIPELINE for" in r.stdout
+    assert "NO CI CONFIG" not in r.stdout
+    lines = counter.read_text().splitlines()
+    assert lines.count("call") >= 2, "returned before the ceiling"
+    assert lines.count("api") == api_calls, "probe must run exactly once, lazily"
+
+
+def test_visible_pipeline_is_never_probed(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "running", counter=counter, env={"FAKE_GLAB_API_MODE": "noconfig"})
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "api" not in counter.read_text().splitlines()
+
+
+def test_seen_pipeline_leaving_the_list_does_not_fast_path(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "running_then_empty", counter=counter, env={"FAKE_GLAB_API_MODE": "noconfig"})
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "NO CI CONFIG" not in r.stdout
+
+
+def test_unreachable_glab_never_reaches_the_probe(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "unreachable", counter=counter, env={"FAKE_GLAB_API_MODE": "noconfig"})
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert "api" not in counter.read_text().splitlines()
 
 
 def test_unreachable_glab_exits_rc5_not_rc3(tmp_path):

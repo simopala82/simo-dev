@@ -27,14 +27,14 @@ DIFF_TRUNCATE_AT = 50_000
 
 
 def load_schema() -> dict:
-    return json.loads(SCHEMA_PATH.read_text())
+    return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def load_prompt_template(mode: str) -> str:
     if mode not in ("create", "review"):
         raise ValueError(f"unknown mode: {mode!r}")
     path = PROMPT_CREATE if mode == "create" else PROMPT_REVIEW
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
 
 
 def truncate_diff(diff: str) -> tuple[str, bool]:
@@ -317,8 +317,8 @@ def main() -> int:
             print("ERROR: --lint-mermaid needs --mermaid-file", file=sys.stderr)
             return 2
         try:
-            mermaid = args.mermaid_file.read_text()
-        except OSError as e:
+            mermaid = args.mermaid_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
             print(f"ERROR: cannot read --mermaid-file {args.mermaid_file}: {e}", file=sys.stderr)
             return 2
         problems = lint_mermaid(mermaid, args.diagram_type)
@@ -329,23 +329,23 @@ def main() -> int:
     if args.normalize_presentation:
         path = args.normalize_presentation
         try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as e:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             print(f"ERROR: cannot parse --normalize-presentation {path}: {e}", file=sys.stderr)
             return 1
         missing = [k for k in REQUIRED_PRESENTATION_KEYS if k not in data]
         if missing:
             print(f"ERROR: presentation missing required keys: {', '.join(missing)}", file=sys.stderr)
             return 1
-        path.write_text(json.dumps(unescape_strings(data), indent=2))
+        path.write_text(json.dumps(unescape_strings(data), indent=2), encoding="utf-8")
         return 0
 
     if args.assemble:
         if not args.presentation_json or not args.context_file:
             print("ERROR: --assemble needs --presentation-json and --context-file", file=sys.stderr)
             return 2
-        presentation = json.loads(args.presentation_json.read_text())
-        context = json.loads(args.context_file.read_text())
+        presentation = json.loads(args.presentation_json.read_text(encoding="utf-8"))
+        context = json.loads(args.context_file.read_text(encoding="utf-8"))
         markdown = assemble_markdown(presentation, context, args.mode)
         print(markdown)
         return 0
@@ -354,8 +354,9 @@ def main() -> int:
         print("ERROR: --diff-file and --context-file are required in prepare mode", file=sys.stderr)
         return 2
 
-    diff = args.diff_file.read_text()
-    context = json.loads(args.context_file.read_text())
+    # A raw git diff can carry non-UTF-8 bytes (a Latin-1 source file); it only feeds an LLM prompt.
+    diff = args.diff_file.read_text(encoding="utf-8", errors="replace")
+    context = json.loads(args.context_file.read_text(encoding="utf-8"))
 
     try:
         request = prepare_request(diff, context, args.mode)
@@ -368,4 +369,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main())

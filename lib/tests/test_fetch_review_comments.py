@@ -312,3 +312,58 @@ def test_marker_survives_an_ascii_stdout():
     non-ASCII message there degrades the text but keeps the rc."""
     for marker in (gl.UNAVAILABLE, gh.UNAVAILABLE):
         marker.encode("ascii")
+
+
+GITLAB_PRELUDE = r'''
+import io, json, urllib.request
+class _Resp(io.BytesIO):
+    headers = {"X-Next-Page": ""}
+payload = [{"resolved": False, "notes": [{"system": False, "author": {"name": "Zo\u00eb \u2605"},
+            "body": "rename \u2192 fetch_all", "position": {"new_path": "a.py", "new_line": 3}}]}]
+urllib.request.urlopen = lambda req, **kw: _Resp(json.dumps(payload).encode())
+'''
+
+FAKE_GH = r'''
+import json, sys
+if any("reviewThreads" in a for a in sys.argv):
+    out = {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"isResolved": False, "isOutdated": False, "path": "a.py", "line": 3,
+                   "comments": {"nodes": [{"author": {"login": "zoe"}, "body": "rename \u2192 fetch_all \u2605"}]}}]}}}}}
+else:
+    out = {"data": {"repository": {"pullRequest": {"reviews": {"nodes": []}}}}}
+sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode("utf-8"))
+'''
+
+
+def test_gitlab_fetcher_prints_non_ascii_comment_on_cp1252_stdout():
+    from cp1252_run import run_cp1252
+    result = run_cp1252(FETCHERS / "fetch_discussions.py", ["group/proj", "7", "gitlab.example.com"],
+                        prelude=GITLAB_PRELUDE, extra_env={"GITLAB_TOKEN": "t"})
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    out = result.stdout.decode("utf-8")
+    assert "Zoë ★" in out and "rename → fetch_all" in out
+
+
+def test_github_fetcher_prints_non_ascii_comment_on_cp1252_stdout(tmp_path):
+    import os
+    from cp1252_run import run_cp1252
+    gh = tmp_path / "gh"
+    gh.write_text(f"#!{sys.executable}\n{FAKE_GH}", encoding="utf-8")
+    gh.chmod(0o755)
+    result = run_cp1252(FETCHERS / "fetch_pr_threads.py", ["owner/repo", "7"],
+                        extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "rename → fetch_all ★" in result.stdout.decode("utf-8")
+
+
+def test_github_fetcher_fails_closed_on_non_utf8_gh_output(tmp_path):
+    import os
+    from cp1252_run import run_cp1252
+    gh = tmp_path / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write(b'\\xff')\n", encoding="utf-8")
+    gh.chmod(0o755)
+    result = run_cp1252(FETCHERS / "fetch_pr_threads.py", ["owner/repo", "7"],
+                        extra_env={"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"})
+    assert result.returncode == 2, result.stderr.decode("utf-8", "replace")
+    assert b"REVIEW COMMENTS UNAVAILABLE" in result.stdout

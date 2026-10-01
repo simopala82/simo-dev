@@ -703,3 +703,45 @@ def test_assemble_skips_malformed_key_files_item_instead_of_crashing(tmp_path):
     assert rc == 0, f"stderr: {err}"
     assert "- `lib/mr_presentation.py` — core logic" in out
     assert "missing path" not in out
+
+
+def test_assemble_review_mode_on_cp1252_stdout():
+    from cp1252_run import run_cp1252
+    result = run_cp1252(LIB, [
+        "--assemble",
+        "--mode", "review",
+        "--presentation-json", str(FIX / "simple_presentation.json"),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    out = result.stdout.decode("utf-8")
+    assert "🟢" in out and "🔴" in out
+
+
+def test_assemble_keeps_utf8_input_intact_on_cp1252_stdout(tmp_path):
+    from cp1252_run import run_cp1252
+    pres = json.loads((FIX / "simple_presentation.json").read_text(encoding="utf-8"))
+    pres["impact_paragraph"] = "Renames old → new ★"
+    pres_file = tmp_path / "pres.json"
+    pres_file.write_text(json.dumps(pres, ensure_ascii=False), encoding="utf-8")
+    result = run_cp1252(LIB, [
+        "--assemble",
+        "--mode", "create",
+        "--presentation-json", str(pres_file),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "Renames old → new ★" in result.stdout.decode("utf-8")
+
+
+def test_prepare_tolerates_non_utf8_bytes_in_diff(tmp_path):
+    from cp1252_run import run_cp1252
+    diff_file = tmp_path / "diff.txt"
+    diff_file.write_bytes("+caf\xe9 old → new\n".encode("utf-8").replace(b"\xc3\xa9", b"\xe9"))
+    result = run_cp1252(LIB, [
+        "--mode", "create",
+        "--diff-file", str(diff_file),
+        "--context-file", str(FIX / "simple_ctx.json"),
+    ])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "+caf� old → new" in json.loads(result.stdout.decode("utf-8"))["prompt"]

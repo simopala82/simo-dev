@@ -163,4 +163,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # A Windows console/pipe defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII diff content; the caller reads the pipe as UTF-8 bytes anyway.
+    # stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))

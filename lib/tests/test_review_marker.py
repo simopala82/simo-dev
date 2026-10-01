@@ -318,12 +318,12 @@ def test_check_ignores_a_record_for_another_repo(state, tree):
     # Same session id, different repo: the lookup keys on both, so a newer record from
     # elsewhere must not vouch for this tree.
     os.utime(tree / "a.py", (NOW + 60, NOW + 60))
-    rm._write([("gitlab.example/team/other", "sess-1", NOW + 120)])
+    _write_state([("gitlab.example/team/other", "sess-1", NOW + 120)])
     assert rm.check(str(tree), "sess-1", ["a.py"]) == 1
 
 
 def test_entries_older_than_prune_window_are_dropped(state, tree):
-    rm._write([(REPO, "old", int(NOW - rm.PRUNE_AFTER_SECONDS - 1))])
+    _write_state([(REPO, "old", int(NOW - rm.PRUNE_AFTER_SECONDS - 1))])
     assert rm.check(str(tree), "old", ["a.py"]) == 1
 
 
@@ -340,6 +340,12 @@ def test_check_cli_requires_a_session_id(state, tree):
 def test_check_cli_accepts_a_session_id(state, tree):
     rm.record(str(tree), "sess-1")
     assert rm.main(["check", "--repo", str(tree), "--session", "sess-1", "--files", "a.py"]) == 0
+
+
+def _write_state(entries):
+    f = rm._state_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("".join(f"{r}:{s}:{t}\n" for r, s, t in entries), encoding="utf-8")
 
 
 def _skill_log(tmp_path, monkeypatch, lines):
@@ -437,7 +443,7 @@ def test_probe_fires_on_the_stale_record_path(state, tree, tmp_path, monkeypatch
     """
     _skill_log(tmp_path, monkeypatch, [_log_line("other-session"),
                                        _log_line("sess-1", "simo-dev:task-intake")])
-    rm._write([(REPO, "sess-1", int(NOW - 3600))])
+    _write_state([(REPO, "sess-1", int(NOW - 3600))])
     os.utime(tree / "a.py", (NOW, NOW))
     assert rm.check(str(tree), "sess-1", ["a.py"], expect_skill_log="simo-dev:commit") == 3
     out = capsys.readouterr().out
@@ -447,7 +453,7 @@ def test_probe_fires_on_the_stale_record_path(state, tree, tmp_path, monkeypatch
 
 def test_stale_record_stays_rc1_when_the_calling_skill_logged(state, tree, tmp_path, monkeypatch, capsys):
     _skill_log(tmp_path, monkeypatch, [_log_line("sess-1", "simo-dev:commit")])
-    rm._write([(REPO, "sess-1", int(NOW - 3600))])
+    _write_state([(REPO, "sess-1", int(NOW - 3600))])
     os.utime(tree / "a.py", (NOW, NOW))
     assert rm.check(str(tree), "sess-1", ["a.py"], expect_skill_log="simo-dev:commit") == 1
     assert "changed after the last review" in capsys.readouterr().out
@@ -455,7 +461,7 @@ def test_stale_record_stays_rc1_when_the_calling_skill_logged(state, tree, tmp_p
 
 def test_stale_record_not_reachable_without_the_flag(state, tree, tmp_path, monkeypatch):
     _skill_log(tmp_path, monkeypatch, [_log_line("other-session")])
-    rm._write([(REPO, "sess-1", int(NOW - 3600))])
+    _write_state([(REPO, "sess-1", int(NOW - 3600))])
     os.utime(tree / "a.py", (NOW, NOW))
     assert rm.check(str(tree), "sess-1", ["a.py"]) == 1
 
@@ -507,7 +513,7 @@ def test_probe_silent_when_this_session_never_logged_on_the_stale_path(
         state, tree, tmp_path, monkeypatch, capsys):
     """Same evidence gap on the other failing path — a record exists and a file is newer."""
     _skill_log(tmp_path, monkeypatch, [_log_line("other-session")])
-    rm._write([(REPO, "sess-1", int(NOW - 3600))])
+    _write_state([(REPO, "sess-1", int(NOW - 3600))])
     os.utime(tree / "a.py", (NOW, NOW))
     assert rm.check(str(tree), "sess-1", ["a.py"], expect_skill_log="simo-dev:commit") == 1
     out = capsys.readouterr().out
@@ -1032,3 +1038,97 @@ def test_check_still_flags_a_stale_sibling_beside_a_version_only_bump(state, man
     _dirty(manifest_tree, MANIFEST_TEXT.replace('"0.1.70"', '"0.1.71"'))
     os.utime(manifest_tree / "a.py", (NOW + 60, NOW + 60))
     assert rm.check(str(manifest_tree), "sess-1", [MANIFEST_REL, "a.py"]) == 1
+
+
+def _cp1252_marker_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("x\n")
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "T"],
+                ["add", "a.py"], ["commit", "-qm", "init"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return repo
+
+
+def _cp1252_check(tmp_path, missing):
+    from cp1252_run import run_cp1252
+    repo = _cp1252_marker_repo(tmp_path)
+    env = {"REVIEW_MARKER_STATE_FILE": str(tmp_path / "state")}
+    script = Path(__file__).parent.parent / "review_marker.py"
+    rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"], extra_env=env)
+    assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
+    return run_cp1252(script, ["check", "--repo", str(repo), "--session", "s1", "--files", missing], extra_env=env)
+
+
+def test_check_prints_non_ascii_path_on_cp1252_stdout(tmp_path):
+    result = _cp1252_check(tmp_path, "→★.py")
+    assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+    assert "→★.py is missing" in result.stdout.decode("utf-8")
+
+
+def test_check_prints_undecodable_path_on_cp1252_stdout(tmp_path):
+    result = _cp1252_check(tmp_path, "bad\udcffname.py")
+    assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+    assert b"bad\xffname.py is missing" in result.stdout
+
+
+def test_record_and_check_non_ascii_repo_id_on_cp1252(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = _cp1252_marker_repo(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@gitlab.example:tëam/→★.git"], check=True)
+    os.utime(repo / "a.py", (1_000_000_000, 1_000_000_000))
+    state = tmp_path / "state"
+    env = {"REVIEW_MARKER_STATE_FILE": str(state)}
+    script = Path(__file__).parent.parent / "review_marker.py"
+    rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"], extra_env=env)
+    assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
+    assert rec.stdout.decode("utf-8") == "review-record: gitlab.example/tëam/→★:s1\n"
+    assert state.read_bytes().startswith("gitlab.example/tëam/→★:s1:".encode("utf-8"))
+    chk = run_cp1252(script, ["check", "--repo", str(repo), "--session", "s1", "--files", "a.py"], extra_env=env)
+    assert chk.returncode == 0, chk.stdout.decode("utf-8", "replace") + chk.stderr.decode("utf-8", "replace")
+
+
+def test_record_remoteless_non_ascii_repo_path_on_cp1252(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = tmp_path / "rëpo→"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    state = tmp_path / "state"
+    script = Path(__file__).parent.parent / "review_marker.py"
+    rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"],
+                     extra_env={"REVIEW_MARKER_STATE_FILE": str(state)})
+    assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
+    rid = str(repo.resolve())
+    assert rec.stdout.decode("utf-8") == f"review-record: {rid}:s1\n"
+    assert state.read_bytes().startswith(f"{rid}:s1:".encode("utf-8"))
+
+
+def test_check_reads_utf8_skill_log_on_cp1252(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = _cp1252_marker_repo(tmp_path)
+    home = tmp_path / "home"
+    (home / ".claude" / "state").mkdir(parents=True)
+    (home / ".claude" / "state" / "dev-flow-skills.log").write_bytes(
+        "2026-08-10T00:00:00Z\ts1\trepo-a\tfeat/ü→\tsimo-dev:task-intake\n".encode("utf-8"))
+    env = {"REVIEW_MARKER_STATE_FILE": str(tmp_path / "state"), "HOME": str(home)}
+    script = Path(__file__).parent.parent / "review_marker.py"
+    chk = run_cp1252(script, ["check", "--repo", str(repo), "--session", "s1", "--files", "a.py",
+                              "--expect-skill-log", "simo-dev:commit"], extra_env=env)
+    assert chk.returncode == 3, chk.stdout.decode("utf-8", "replace") + chk.stderr.decode("utf-8", "replace")
+
+
+def test_record_compacts_non_ascii_store_on_cp1252(tmp_path):
+    import time
+    from cp1252_run import run_cp1252
+    repo = _cp1252_marker_repo(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@gitlab.example:tëam/→★.git"], check=True)
+    state = tmp_path / "state"
+    entry = f"gitlab.example/tëam/→★:s1:{int(time.time())}\n"
+    state.write_bytes((entry * (rm._COMPACT_AT_LINES + 1)).encode("utf-8"))
+    script = Path(__file__).parent.parent / "review_marker.py"
+    rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"],
+                     extra_env={"REVIEW_MARKER_STATE_FILE": str(state)})
+    assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
+    lines = state.read_bytes().decode("utf-8").splitlines()
+    assert len(lines) == 1 and lines[0].startswith("gitlab.example/tëam/→★:s1:")

@@ -126,3 +126,35 @@ def test_relative_or_empty_repo_exits_2():
         rc, out, err = run_lib(["pending", "--repo", repo])
         assert rc == 2
         assert "absolute path" in err
+
+
+def test_add_and_section_round_trip_non_ascii_on_cp1252_stdout(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = make_repo(tmp_path)
+    line = "`→.py` — ★ — ü"
+    add = run_cp1252(LIB, ["add", "--repo", str(repo), line])
+    assert add.returncode == 0, add.stderr.decode("utf-8", "replace")
+    assert (repo / ".git" / "simo-dev-also-fixed.feat-x.md").read_bytes() == f"{line}\n".encode("utf-8")
+    sec = run_cp1252(LIB, ["section", "--repo", str(repo)])
+    assert sec.returncode == 0, sec.stderr.decode("utf-8", "replace")
+    assert sec.stdout.decode("utf-8") == f"### Also fixed\n\n- {line}\n"
+    pend = run_cp1252(LIB, ["pending", "--repo", str(repo)])
+    assert pend.stdout.decode("utf-8") == f"{line}\n"
+
+
+def test_non_ascii_branch_names_the_ledger_file_on_cp1252(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "feat/ü→", str(repo)], check=True)
+    add = run_cp1252(LIB, ["add", "--repo", str(repo), "x"])
+    assert add.returncode == 0, add.stderr.decode("utf-8", "replace")
+    assert (repo / ".git" / "simo-dev-also-fixed.feat-ü→.md").exists()
+
+
+def test_drop_reports_non_ascii_line_on_cp1252_stderr(tmp_path):
+    from cp1252_run import run_cp1252
+    repo = make_repo(tmp_path)
+    drop = run_cp1252(LIB, ["drop", "--repo", str(repo), "→★ ü"])
+    assert drop.returncode == 1
+    assert drop.stderr == "not listed: →★ ü\n".encode("utf-8")

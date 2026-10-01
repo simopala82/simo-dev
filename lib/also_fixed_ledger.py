@@ -23,21 +23,23 @@ PREFIX = "simo-dev-also-fixed"
 
 
 def git_dir(repo: str) -> Path:
-    out = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, text=True, check=True)
+    out = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, check=True,
+                         encoding="utf-8", errors="surrogateescape")
     return Path(out.stdout.strip())
 
 
 def branch_key(repo: str) -> str:
-    out = subprocess.run(["git", "-C", repo, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True, text=True)
+    out = subprocess.run(["git", "-C", repo, "symbolic-ref", "--short", "-q", "HEAD"], capture_output=True,
+                         encoding="utf-8", errors="surrogateescape")
     return out.stdout.strip().replace("/", "-") if out.returncode == 0 else "detached"
 
 
 def read_lines(path: Path) -> list[str]:
-    return path.read_text().splitlines() if path.exists() else []
+    return path.read_text(encoding="utf-8", errors="surrogateescape").splitlines() if path.exists() else []
 
 
 def write_lines(path: Path, lines: list[str]) -> None:
-    path.write_text("".join(ln + "\n" for ln in lines))
+    path.write_text("".join(ln + "\n" for ln in lines), encoding="utf-8", errors="surrogateescape")
 
 
 def normalize(lines: list[str]) -> list[str]:
@@ -95,4 +97,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    # stdout keeps surrogateescape: ledger lines come from argv, which may not be valid UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main())

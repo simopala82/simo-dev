@@ -24,7 +24,7 @@ Wraps `mcp__ccd_session__spawn_task` so the user can ask casually ("spawn a task
      - Project bug → that project's root (current `cwd` if same project, and only if it IS the root)
      - General → omit `cwd` (defaults to current project)
 
-2. **Confirm the tool is available, then spawn directly.** Before calling `mcp__ccd_session__spawn_task`, confirm it is actually present this session (in the tool list, or a prior successful `ToolSearch` for it). Not available → tell the user explicitly (e.g. "this session doesn't have the spawn-task capability available; spawn it yourself, or use a session where it's enabled") and stop, rather than calling the tool and surfacing whatever raw error results. Available → do not gate on confirmation from the user — the chip itself is the confirmation surface.
+2. **Confirm the tool is available, then spawn directly.** Before calling `mcp__ccd_session__spawn_task`, confirm it is callable this session: when it is not already — listed only as a deferred tool, or not listed at all — run `ToolSearch` `select:mcp__ccd_session__spawn_task` once first, and never skip that load because the name is not listed. No schema back, or no `ToolSearch` tool at all (not available) → tell the user explicitly (e.g. "this session doesn't have the spawn-task capability available; spawn it yourself, or use a session where it's enabled") and stop, rather than calling the tool and surfacing whatever raw error results. Available → do not gate on confirmation from the user — the chip itself is the confirmation surface.
 
 3. **After spawning**, one-line ack with the title. Continue the original task.
 
@@ -45,7 +45,7 @@ git worktree add <repo>/.worktrees/<child-name> -b <child-branch> <source-branch
 
 ## Correcting a spawned task after the chip is clicked
 
-`mcp__ccd_session__dismiss_task` cannot withdraw a chip the user already clicked — it responds that the task was already started and cannot be withdrawn, nothing changed. A replacement chip doesn't fix this either — it opens a **separate** session instead of correcting the one already running. To correct a brief that went stale after the click, use `mcp__ccd_session_mgmt__send_message` on that session's id (from `mcp__ccd_session_mgmt__list_sessions`) — it arrives as a user turn in the spawned session.
+`mcp__ccd_session__dismiss_task` cannot withdraw a chip the user already clicked — it responds that the task was already started and cannot be withdrawn, nothing changed. A replacement chip doesn't fix this either — it opens a **separate** session instead of correcting the one already running. To correct a brief that went stale after the click, use `mcp__ccd_session_mgmt__send_message` on that session's id (from `mcp__ccd_session_mgmt__list_sessions`) — it arrives as a user turn in the spawned session. When either tool is not yet callable (listed only as deferred, or not listed at all), run one `ToolSearch` `select:mcp__ccd_session_mgmt__list_sessions,mcp__ccd_session_mgmt__send_message` first, never skipped because the names are unlisted. No schema back for one or both, or no `ToolSearch` → tell the user the running session's brief is stale and give them the correction text to send it by hand.
 
 ## Anti-patterns
 

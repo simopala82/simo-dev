@@ -112,7 +112,7 @@ When `simo-dev:mr-followup` settles: register the completion ping (bg-tasks), di
 - About to fire a session-spawn follow-up → suppress and log.
 - About to enter `brainstorming`/`grill-me` → NO (they block on the user); take the recommended option, log.
 - User message arrived and you're tempted to keep driving → NO: that IS the stop signal, disarm and go interactive.
-- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages, and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`.
+- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages, and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`. Same for any `simo-dev:commit` step 9 `STOP: could not resolve …` (GitLab username, MR title, MR target branch) and for a failed step-9 `glab mr create` / `gh pr create` call: follow that step's per-cause recovery paragraph, not this line.
 
 ## Honors
 

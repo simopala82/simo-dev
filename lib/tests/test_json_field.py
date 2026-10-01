@@ -91,3 +91,32 @@ def test_array_valued_path_exits_1(tmp_path, capsys):
     out, err = capsys.readouterr()
     assert out == ""
     assert "json_field.py:" in err
+
+
+def test_non_ascii_scalar_from_file_on_cp1252_stdout(tmp_path):
+    from cp1252_run import run_cp1252
+    src = tmp_path / "in.json"
+    src.write_text('{"title": "old → new ★"}', encoding="utf-8")
+    script = Path(__file__).parent.parent / "json_field.py"
+    result = run_cp1252(script, [str(src), "title"])
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.decode("utf-8") == "old → new ★"
+
+
+def test_non_ascii_scalar_from_stdin_on_cp1252_stdout():
+    from cp1252_run import run_cp1252
+    script = Path(__file__).parent.parent / "json_field.py"
+    result = run_cp1252(script, ["-", "title"], stdin='{"title": "old → new ★"}'.encode("utf-8"))
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert result.stdout.decode("utf-8") == "old → new ★"
+
+
+def test_non_utf8_file_reports_error_without_traceback(tmp_path):
+    from cp1252_run import run_cp1252
+    src = tmp_path / "in.json"
+    src.write_bytes(b'{"title": "caf\xe9"}')
+    script = Path(__file__).parent.parent / "json_field.py"
+    result = run_cp1252(script, [str(src), "title"])
+    assert result.returncode == 1
+    assert result.stderr.decode("utf-8").startswith("json_field.py: ")
+    assert b"Traceback" not in result.stderr

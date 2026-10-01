@@ -1,6 +1,8 @@
 """Tests for lib/diff_capture.py (the diff capture context gate)."""
 import importlib.util
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -144,3 +146,16 @@ def test_main_git_failure_returns_1_no_stdout_diff(repo, capsys):
     assert rc == 1
     assert captured.out == ""
     assert captured.err != ""
+
+
+def test_cli_prints_non_ascii_diff_on_cp1252_stdout(repo):
+    # Windows consoles/pipes default to the ANSI code page; PYTHONIOENCODING=cp1252
+    # reproduces that on any OS.
+    (repo / "a.txt").write_text("line1\nline2 → ★\n", encoding="utf-8")
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    env.pop("PYTHONUTF8", None)
+    result = subprocess.run(
+        [sys.executable, str(LIB), str(repo), "--", "HEAD"], capture_output=True, env=env
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "line2 → ★" in result.stdout.decode("utf-8")

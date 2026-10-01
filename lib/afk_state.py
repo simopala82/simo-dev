@@ -73,7 +73,7 @@ def _live_entries(now: float) -> list[tuple[str, str, str, int]]:
     if not f.exists():
         return []
     entries = []
-    for line in f.read_text().splitlines():
+    for line in f.read_text(encoding="utf-8", errors="surrogateescape").splitlines():
         entry = _parse(line.strip()) if line.strip() else None
         if entry and now - entry[3] <= TTL_SECONDS:
             entries.append(entry)
@@ -83,7 +83,7 @@ def _live_entries(now: float) -> list[tuple[str, str, str, int]]:
 def _write(entries: list[tuple[str, str, str, int]]) -> None:
     f = _state_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text("".join(f"{r}:{b}:{s}:{t}\n" for r, b, s, t in entries))
+    f.write_text("".join(f"{r}:{b}:{s}:{t}\n" for r, b, s, t in entries), encoding="utf-8", errors="surrogateescape")
 
 
 def _state_of(rid: str, branch: str, now: float) -> str:
@@ -145,4 +145,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # A Windows pipe/redirect defaults to the ANSI code page (cp1252), which cannot encode
+    # most non-ASCII text. stderr keeps backslashreplace: reconfigure() without errors= resets it to strict.
+    # stdout keeps surrogateescape: the repo-id comes from git output decoded with surrogateescape.
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main())

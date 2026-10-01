@@ -233,6 +233,18 @@ def test_link_cmd_roundtrip(tmp_path):
     assert tc.get_field("CUS", "link_cmd", path) == "python3 /x/jira_link.py"
 
 
+def test_next_subtask_cmd_roundtrip(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    assert tc.main(["set", "PROJ", "next_subtask_cmd", "python3 /x/jira_next_subtask.py", "--config", str(path)]) == 0
+    assert tc.main(["get", "PROJ", "next_subtask_cmd", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == "python3 /x/jira_next_subtask.py"
+
+
+def test_next_subtask_cmd_unconfigured_run_is_silent_noop(tmp_path, capfd):
+    assert tc.main(["run", "--config", str(tmp_path / "none.json"), "PROJ", "next_subtask_cmd", "PROJ-2", "--resolved-at", "Done"]) == 0
+    assert capfd.readouterr().out == ""
+
+
 def test_assign_cmd_roundtrip(tmp_path, capsys):
     path = tmp_path / "tracker.json"
     assert tc.main(["set", "CUS", "assign_cmd", "python3 /x/jira_assign.py", "--config", str(path)]) == 0

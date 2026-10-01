@@ -10,8 +10,11 @@ sub-task merged with a different API shape than the plan assumed. The worktree
 still compiled -- no touched symbol had been removed -- so a green build was
 mistaken for proof the dependency was current. This script never makes that
 judgment itself: it only reports the dependency ticket's JIRA status and, when
-resolved, the diff that actually merged. The caller (plan-execute step 1)
-decides whether that diff still matches the plan's assumption.
+resolved, the diff that actually merged. "Resolved" also covers a ticket whose
+status has not reached Done yet (e.g. a testing state) when a commit naming
+its key already sits on origin/<base> -- the code merged, so its shape can be
+checked. The caller (plan-execute step 1) decides whether that diff still
+matches the plan's assumption.
 
 Usage:
     check_dependency_ticket.py <TICKET> [--repo PATH] [--base BRANCH]
@@ -21,27 +24,51 @@ Usage:
 "Worktree cwd gotcha"). --base defaults to the remote default branch, same
 resolution as check_base_freshness.default_base.
 
-Resolution order for the merged diff, once the ticket's JIRA status is Done/
-Closed/Resolved:
+Source of the merged diff, for every readable status: when merged_in_base()
+finds a commit on origin/<base> whose message names the key (with key
+boundaries), that commit's first-parent diff is used alone -- it is the only
+source known to sit on <base>, and an empty diff does not fall back to the
+chain below. It is the whole MR for a squash or merge commit, but just one
+commit for a multi-commit rebase-merge, or when the grep hits a branch-side
+commit of a merge whose own message omits the key. The newest key-naming
+commit wins, so the hit can also be a later follow-up or revert, or a commit
+that only mentions the key (another ticket's commit, a back-merge of <base>
+into the ticket's branch, whose diff is upstream work), rather than the MR's
+own commit.
+
+With no hit, a ticket that is not Done/Closed/Resolved is `open` (or
+`unverifiable`, see below). A Done/Closed/Resolved ticket falls back to:
   1. task-intake names branches `<type>/<jira-key-lower>-<desc>` -- look for a
      matching ref under `origin/*` and diff it against the merge-base with
      <base> (no forge auth needed, works even after the MR UI has moved on).
-  2. Fall back to `git log --all --grep=<TICKET>` on the fetched history --
-     catches a squash-merge commit whose branch was deleted by GitLab's
-     force_remove_source_branch.
-  3. Last resort: search the forge for an MR/PR mentioning `<TICKET>` (`glab
-     mr list --search` then `gh pr list --search`) and diff it directly, for
-     the case where the local clone never fetched the merging branch.
+  2. Fall back to `git log --all` grepping the key (same boundaries) on the
+     fetched history -- a commit merged somewhere other than <base>, or found
+     while origin/<base> does not resolve.
+  3. Last resort: search the forge for an MR/PR naming `<TICKET>` (`glab mr
+     list --search` then `gh pr list --search`) and diff it directly, for the
+     case where the local clone never fetched the merging branch.
   Each step only runs if the previous one found nothing -- best-effort, never
   an error: this script has no judgment to protect, only data to report.
+  Steps 1-3 can pick a newer, unmerged ref or commit.
+
+The best-effort `git fetch origin` runs for every readable status, `open`
+included, so a stale clone still sees a merge that already happened.
 
 Exit codes:
     0  ran to completion; result printed on stdout -- one of:
-       open                       ticket not yet Done/Closed/Resolved
+       open                       ticket not yet Done/Closed/Resolved and no
+                                   commit naming it on origin/<base>
        resolved-with-diff         ticket resolved, merged diff follows on
-                                   stdout after the status line
+                                   stdout after the status line; also for a
+                                   merged-but-not-closed ticket, with a
+                                   `status: <X> (merged into <base>)` line
+                                   before the diff
        resolved-no-diff-found     ticket resolved, no diff could be recovered
-       unverifiable               JIRA status itself could not be read
+                                   (same `status:` line when merged-not-closed)
+       unverifiable               JIRA status itself could not be read; or
+                                   a not-Done status whose origin/<base>
+                                   does not resolve (then followed by
+                                   `status: <X> (origin/<base> not found)`)
        This script never blocks: judgment stays with the caller.
     2  usage/argument error (argparse's own exit code)
 """
@@ -49,6 +76,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 
@@ -112,18 +140,40 @@ def find_branch_diff(repo: str, key: str, base: str) -> str:
     return ""
 
 
+def _key_pattern(key: str) -> str:
+    """Pattern naming `key` with boundaries, valid both as a git ERE and as a
+    Python `re`: PROJ-176 never matches PROJ-1766, and PROJ-1766 never matches
+    SUBPROJ-1766 or SUB_PROJ-1766. Assumes keys of the form
+    `[A-Z][A-Z0-9_]+-[0-9]+` (the plan's `Depends on` field) -- not enforced
+    here -- so the key is not regex-escaped."""
+    return f"(^|[^A-Za-z0-9_]){key}([^0-9]|$)"
+
+
 def find_log_diff(repo: str, key: str) -> str:
-    """Diff of the most recent commit whose message mentions `key`, or "" if
-    none is found in the fetched history (catches a squash-merge whose branch
-    was already deleted by force_remove_source_branch). Diffs against the
-    first parent rather than `git show`: on a clean 2-parent merge commit (a
-    non-squash --no-ff merge, or GitLab's "merge commit" strategy) `git show`
-    prints only the commit metadata -- no diff at all, since git suppresses
-    the combined diff when there are no conflicts."""
-    sha = _git(repo, ["log", "--all", "-i", f"--grep={key}", "--format=%H", "-1"])
+    """Diff of the most recent commit anywhere in the fetched history whose
+    message names `key`, or "" if none. main() only reaches it when no such
+    commit sits on origin/<base>, so a hit here lives off <base>: merged into
+    another branch, or found while origin/<base> does not resolve -- and it
+    can be unmerged work. Diffs against the first parent rather than `git
+    show`: on a clean 2-parent merge commit (a non-squash --no-ff merge, or
+    GitLab's "merge commit" strategy) `git show` prints only the commit
+    metadata -- no diff at all, since git suppresses the combined diff when
+    there are no conflicts."""
+    sha = _git(repo, ["log", "--all", "-E", "-i", f"--grep={_key_pattern(key)}", "--format=%H", "-1"])
     if not sha:
         return ""
     return _git(repo, ["diff", f"{sha}^", sha])
+
+
+def merged_in_base(repo: str, key: str, base: str) -> str:
+    """SHA of the newest commit on origin/<base> whose message names `key`, or
+    "" if none. Tracker-agnostic "already merged" signal, used for every
+    status: a Done ticket too, and one whose status has not reached Done yet
+    (e.g. sitting in a testing state after its MR merged). Restricted to the
+    base -- unlike find_log_diff's --all -- so a commit on an unmerged branch
+    never counts. Any key-naming commit on the base counts (a revert or a
+    mention included): the caller confirms the diff anyway."""
+    return _git(repo, ["log", f"origin/{base}", "-E", "-i", f"--grep={_key_pattern(key)}", "--format=%H", "-1"])
 
 
 def _mentions_key(item: dict, key: str) -> bool:
@@ -133,8 +183,8 @@ def _mentions_key(item: dict, key: str) -> bool:
     visible relation to it). Keep only hits whose title or description
     actually names the ticket, so a search result on some OTHER ticket is
     never mistaken for this one's diff."""
-    key_upper = key.upper()
-    return key_upper in (item.get("title") or "").upper() or key_upper in (item.get("description") or "").upper()
+    pattern = re.compile(_key_pattern(key), re.IGNORECASE)
+    return bool(pattern.search(item.get("title") or "") or pattern.search(item.get("description") or ""))
 
 
 def find_forge_diff(repo: str, key: str) -> str:
@@ -195,19 +245,38 @@ def main(argv: list[str] | None = None) -> int:
     if status is None:
         print("unverifiable")
         return 0
-    if status.lower() not in _DONE_STATUSES:
+
+    base = args.base or default_base(args.repo)
+    _git(args.repo, ["fetch", "origin", "--quiet"])  # best-effort; a stale local clone just falls through the chain
+    done = status.lower() in _DONE_STATUSES
+    merged_sha = merged_in_base(args.repo, args.ticket, base)
+    if not done and not merged_sha:
+        if not _git(args.repo, ["rev-parse", "--verify", "--quiet", f"origin/{base}"]):
+            # A wrong --base (or no remote ref) would otherwise read as a silent `open`.
+            print("unverifiable")
+            print(f"status: {status} (origin/{base} not found)")
+            return 0
         print("open")
         print(f"status: {status}")
         return 0
 
-    base = args.base or default_base(args.repo)
-    _git(args.repo, ["fetch", "origin", "--quiet"])  # best-effort; a stale local clone just falls through the chain
-    diff = resolve_diff(args.repo, args.ticket, base)
+    if merged_sha:
+        # Only the hit commit itself is known to sit on <base>, whatever the
+        # status: the branch and --all lookups in resolve_diff can pick a newer,
+        # unmerged ref/commit. The diff is the whole MR only when the hit is the
+        # squash or merge commit itself; a multi-commit rebase-merge, or a merge
+        # commit whose message omits the key (the grep also walks the branch
+        # side), shows just one commit; and the newest key-naming commit wins,
+        # so the hit can be a later follow-up, a revert or a mere mention.
+        diff = _git(args.repo, ["diff", f"{merged_sha}^", merged_sha])
+    else:
+        diff = resolve_diff(args.repo, args.ticket, base)
+    merged_note = f"status: {status} (merged into {base})" if merged_sha and not done else ""
+    print("resolved-with-diff" if diff else "resolved-no-diff-found")
+    if merged_note:
+        print(merged_note)
     if diff:
-        print("resolved-with-diff")
         print(diff)
-        return 0
-    print("resolved-no-diff-found")
     return 0
 
 
