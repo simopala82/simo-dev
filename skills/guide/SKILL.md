@@ -20,7 +20,7 @@ At task start, read `CONTEXT.md` if present (use its terms). Update when a term 
 ## Worktrees
 
 - Worktree policy, path convention and the never-a-second-worktree invariant: CLAUDE.md "Worktrees" (always-on; this file is not). `<name>` = branch minus the `<type>/` prefix — `feat/proj-1234-topn` → `.worktrees/proj-1234-topn`.
-- Decision table, ordered commands and the adopt-in-place procedure: `simo-dev:task-intake` step 6 (+ its `skills/task-intake/lib/worktree-carry.md`). Mechanism behind the `git -C` discipline: CLAUDE.md "Worktree cwd gotcha".
+- Decision table, ordered commands and the adopt/relocate procedure: `simo-dev:task-intake` step 6 (+ its `skills/task-intake/lib/worktree-carry.md`). Mechanism behind the `git -C` discipline: CLAUDE.md "Worktree cwd gotcha".
 
 ## Ticket marker
 
