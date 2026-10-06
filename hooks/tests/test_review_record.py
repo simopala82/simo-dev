@@ -4,7 +4,8 @@
 # ///
 """pytest port of the now-deleted hooks/test_review_record.sh (removed in c0d0234f,
 the same commit that added this file); cases 1-13 are ported here. Case 14, the
-settings.json hook-registration check, has no pytest counterpart in this file."""
+settings.json hook-registration check, has no pytest counterpart in this file. The
+SubagentHandback cases at the bottom are new, not part of that port."""
 import json
 import subprocess
 import sys
@@ -197,3 +198,155 @@ def test_interrupted_reviewer_records_nothing(tmp_path):
     transcript = _mk_transcript(tmp_path, "user", f"REPO: {marked_repo}\nReview.")
     _fire_path(transcript, "simo-dev:code-reviewer", "sess-13", cwd_repo, last="", state=state)
     assert not state.exists() or state.read_text() == ""
+
+
+def _mk_handback_transcript(tmp_path, prompt, message="verdict: mergeable", tail=(), counter=[0]):
+    counter[0] += 1
+    f = tmp_path / f"handback-{counter[0]}.jsonl"
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": prompt}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "..."}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_hb", "name": "SubagentHandback",
+             "input": {"message": message}}]}},
+        {"type": "attachment", "attachment": {"type": "noise"}},
+        *tail,
+    ]
+    f.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    return f
+
+
+def _handback_fire(tmp_path, session, prompt_for, **kw):
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    transcript = _mk_handback_transcript(tmp_path, prompt_for(marked_repo), **kw)
+    _fire_path(transcript, "simo-dev:code-reviewer", session, cwd_repo, last="", state=state)
+    return _recorded(state), marked_repo
+
+
+def test_handback_conclusion_without_last_message_records(tmp_path):
+    recorded, marked_repo = _handback_fire(tmp_path, "sess-14", lambda r: f"REPO: {r}\nReview.")
+    assert recorded.startswith(_repo_id(marked_repo) + ":sess-14:")
+
+
+def test_handback_with_blank_message_records_nothing(tmp_path):
+    recorded, _ = _handback_fire(tmp_path, "sess-15", lambda r: f"REPO: {r}\nReview.", message="  ")
+    assert recorded == ""
+
+
+def test_handback_with_non_string_message_records_nothing(tmp_path):
+    recorded, _ = _handback_fire(tmp_path, "sess-16", lambda r: f"REPO: {r}\nReview.", message=["x"])
+    assert recorded == ""
+
+
+def test_interrupted_resume_after_earlier_handback_records_nothing(tmp_path):
+    """Round 1 handed back; round 2 (SendMessage resume, same transcript) was interrupted
+    mid-tool -- the stale round-1 handback must not count as round 2's conclusion."""
+    tail = (
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_hb",
+             "content": [{"type": "text", "text": "{\"success\":true}"}]}]}},
+        {"type": "user", "message": {"role": "user", "content": "Re-review the new diff."}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "git diff"}}]}},
+    )
+    recorded, _ = _handback_fire(tmp_path, "sess-17", lambda r: f"REPO: {r}\nReview.", tail=tail)
+    assert recorded == ""
+
+
+def test_resume_interrupted_right_after_new_prompt_records_nothing(tmp_path):
+    """The resume prompt is a plain user message after the earlier handback's tool_result;
+    an interrupt before any assistant output leaves it last."""
+    tail = (
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_hb",
+             "content": [{"type": "text", "text": "{\"success\":true}"}]}]}},
+        {"type": "user", "message": {"role": "user", "content": "Re-review the new diff."}},
+    )
+    recorded, _ = _handback_fire(tmp_path, "sess-25", lambda r: f"REPO: {r}\nReview.", tail=tail)
+    assert recorded == ""
+
+
+def _result_entry(tool_use_id):
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_use_id,
+         "content": [{"type": "text", "text": "{\"success\":true}"}]}]}}
+
+
+def test_handback_followed_by_its_own_tool_result_records(tmp_path):
+    recorded, marked_repo = _handback_fire(tmp_path, "sess-20", lambda r: f"REPO: {r}\nReview.",
+                                           tail=(_result_entry("toolu_hb"),))
+    assert recorded.startswith(_repo_id(marked_repo) + ":sess-20:")
+
+
+def test_handback_followed_by_its_own_error_result_records_nothing(tmp_path):
+    error_result = _result_entry("toolu_hb")
+    error_result["message"]["content"][0]["is_error"] = True
+    recorded, _ = _handback_fire(tmp_path, "sess-24", lambda r: f"REPO: {r}\nReview.",
+                                 tail=(error_result,))
+    assert recorded == ""
+
+
+def test_handback_followed_by_foreign_tool_result_records_nothing(tmp_path):
+    recorded, _ = _handback_fire(tmp_path, "sess-21", lambda r: f"REPO: {r}\nReview.",
+                                 tail=(_result_entry("toolu_other"),))
+    assert recorded == ""
+
+
+def test_handback_marker_below_line_one_records_nothing(tmp_path):
+    recorded, _ = _handback_fire(tmp_path, "sess-18", lambda r: f"Review.\nREPO: {r}")
+    assert recorded == ""
+
+
+def test_handback_malformed_lines_do_not_raise(tmp_path):
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    state = tmp_path / "state"
+    f = tmp_path / "malformed.jsonl"
+    f.write_text("not json\n" + json.dumps([1, 2]) + "\n" + json.dumps(
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "SubagentHandback", "input": "oops"}, 7]}}) + "\n")
+    _fire_path(f, "simo-dev:code-reviewer", "sess-19", cwd_repo, last="", state=state)
+    assert _recorded(state) == ""
+
+
+def test_handback_parallel_with_running_tool_records_nothing(tmp_path):
+    """A handback emitted in the same response as another tool_use is written as a separate
+    entry sharing message.id; while that tool still runs the handback is last, and an
+    interrupt there must not count as a conclusion."""
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    f = tmp_path / "parallel.jsonl"
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": f"REPO: {marked_repo}\nReview."}},
+        {"type": "assistant", "message": {"id": "msg_X", "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "..."}]}},
+        {"type": "assistant", "message": {"id": "msg_X", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "pytest"}}]}},
+        {"type": "assistant", "message": {"id": "msg_X", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_hb", "name": "SubagentHandback",
+             "input": {"message": "verdict: mergeable"}}]}},
+    ]
+    f.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    _fire_path(f, "simo-dev:code-reviewer", "sess-22", cwd_repo, last="", state=state)
+    assert _recorded(state) == ""
+
+
+def test_handback_sharing_message_id_with_thinking_only_records(tmp_path):
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    f = tmp_path / "same-id.jsonl"
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": f"REPO: {marked_repo}\nReview."}},
+        {"type": "assistant", "message": {"id": "msg_Y", "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "..."}]}},
+        {"type": "assistant", "message": {"id": "msg_Y", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_hb", "name": "SubagentHandback",
+             "input": {"message": "verdict: mergeable"}}]}},
+    ]
+    f.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    _fire_path(f, "simo-dev:code-reviewer", "sess-23", cwd_repo, last="", state=state)
+    assert _recorded(state).startswith(_repo_id(marked_repo) + ":sess-23:")

@@ -107,15 +107,7 @@ before the cap-reached branch. Announce the value in one line so the report is a
 
 ### 2. Launch pipeline poll (background, non-blocking)
 
-Register the task, then launch the poll with `run_in_background: true` — tell the user it's running; do NOT sleep or poll manually, and do NOT wait for it here. Steps 5-6 (fetch remote comments, local code review) don't depend on the pipeline outcome — continue straight to step 5 once the poll is launched. Its result is collected at step 7, the flow's one sync point for it.
-
-```bash
-tag="${CLAUDE_CODE_SESSION_ID%%-*}"
-[ -n "$tag" ] && mkdir -p ~/.config/claude-notify \
-  && printf '%s\n' "$tag: mr-review pipeline poll" >> ~/.config/claude-notify/bg-tasks
-```
-
-> Nothing found acts on the row; `~/.claude/scripts/cleanup.py` only reports the file as stale. Why the tag and `printf`, never `echo`: logged in the author's own notes (worth keeping a similar log), section "`bg-tasks`: registering into a queue nothing reads".
+Launch the poll with `run_in_background: true` — tell the user it's running; do NOT sleep or poll manually, and do NOT wait for it here. Steps 5-6 (fetch remote comments, local code review) don't depend on the pipeline outcome — continue straight to step 5 once the poll is launched. Its result is collected at step 7, the flow's one sync point for it.
 
 GitLab: `lib/pipeline_poll_gitlab.py "<worktree-abs>" "<branch>"`, which scopes its own `glab pipeline list` call to `<worktree-abs>` internally, transitional states (`running|pending|created|preparing|waiting_for_resource|scheduled|canceling`) = still going. Bounded on both ends — `POLL_NOPIPE_MAX_WAIT` (300s) while nothing matches the branch, cut short to the first read when a one-shot probe finds no CI config for the branch (`lib/pipeline-scripts.md` "GitLab no-CI probe"), `POLL_MAX_WAIT` (1800s) once a pipeline is visible. GitHub: `lib/pipeline_poll_github.py "<pr-num>"`, bounded on both ends with the same knobs — `POLL_NOPIPE_MAX_WAIT` (300s) while no check has been reported, `POLL_MAX_WAIT` (1800s) once one has, `POLL_INTERVAL` (30s) between polls.
 

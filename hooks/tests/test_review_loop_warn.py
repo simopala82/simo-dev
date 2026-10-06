@@ -2,11 +2,12 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""pytest port of hooks/test_review_loop_warn.sh."""
+"""Tests for hooks/review_loop_warn.py, ported to pytest from the retired shell suite."""
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -226,3 +227,22 @@ def test_invalid_utf8_path_stays_silent_when_covered(tmp_path):
     _record(repo, state)
     subprocess.run(["touch", "-t", "200001010000", str(repo / "a.txt"), str(bad_path)], check=True)
     assert "additionalContext" not in _warns("git commit -m x", repo, state)
+
+
+def test_hook_leaves_git_index_untouched(tmp_path):
+    """Porcelain `git diff` refreshes a stat-dirty entry and writes .git/index back through
+    index.lock, even under GIT_OPTIONAL_LOCKS=0 -- in a shared checkout that collides with
+    another session's `git add`/`commit`. The hook must only read."""
+    repo = _mkrepo(tmp_path)
+    (repo / "b.txt").write_text("b\n")
+    subprocess.run(["git", "-C", str(repo), "add", "b.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "b"], check=True)
+    later = time.time() + 100
+    os.utime(repo / "b.txt", (later, later))   # stat-dirty, content unchanged
+    idx = repo / ".git" / "index"
+    before = (idx.stat().st_ino, idx.stat().st_mtime_ns)
+    # PATH passed through: _warns' bare env would pin /usr/bin/git via os.defpath
+    out = _warns("git commit -m x", repo, tmp_path / "state", extra_env={"PATH": os.environ["PATH"]})
+    after = (idx.stat().st_ino, idx.stat().st_mtime_ns)
+    assert "additionalContext" in out   # the hook really reached the listing
+    assert before == after

@@ -5,9 +5,9 @@
         "matcher": "Bash",
         "hooks": [
           {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/mr_followup_remind.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "type": "command"
           }
         ]
       },
@@ -15,21 +15,9 @@
         "matcher": "Skill",
         "hooks": [
           {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/skill_logger.py\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "simo-dev:code-reviewer|code-reviewer",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/review_record.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "type": "command"
           }
         ]
       }
@@ -39,9 +27,9 @@
         "matcher": "Bash",
         "hooks": [
           {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/review_loop_warn.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "type": "command"
           }
         ]
       },
@@ -49,14 +37,26 @@
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
           {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/base_freshness_warn.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "type": "command"
           },
           {
-            "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/task_intake_warn.py\"",
-            "timeout": 5
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "simo-dev:code-reviewer|code-reviewer",
+        "hooks": [
+          {
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/review_record.py\"",
+            "timeout": 5,
+            "type": "command"
           }
         ]
       }

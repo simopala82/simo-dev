@@ -1,7 +1,10 @@
 """Tests for lib/review_marker.py (per-(repo+session) review record)."""
 import importlib.util
 import os
+import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -173,7 +176,7 @@ def test_check_skips_a_deletion_staged_with_git_rm(state, tree):
     # `git ls-files --deleted` compares the index against the worktree, so a deletion already
     # staged with `git rm` is absent from it — the path is no longer in the index. Using it
     # would fail a deletion-only commit the moment it was staged, which is exactly the
-    # "must not fail forever" case above. `diff --diff-filter=D HEAD` covers both.
+    # "must not fail forever" case above. `diff-index --diff-filter=D HEAD` covers both.
     subprocess.run(["git", "-C", str(tree), "rm", "-q", "a.py"], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     rm.record(str(tree), "sess-1")
@@ -231,26 +234,27 @@ def test_check_handles_a_path_containing_a_carriage_return(state, tree):
 
 
 def _caller_listing(tree, zero_terminated):
-    """A candidate list of the shape the callers build — re-implemented, not executed.
+    """A candidate list of the shape the callers build: tracked changes against HEAD plus
+    untracked non-ignored files.
 
-    Same two listings as skills/commit/SKILL.md step 1 (the hook adds a `sort -zu` dedup
-    this omits): tracked changes against HEAD plus untracked non-ignored files.
-    `zero_terminated=False` reproduces the pre-fix form, which is what makes the assertion
-    below discriminating rather than a restatement of check()'s own behaviour.
-
-    Re-implemented means it pins the git-to-_tracked_deletions contract, NOT either
-    caller's source: a caller that dropped `-z` would leave this green. The hook is
-    guarded by hooks/test_review_loop_warn.sh assertions 12 and 12b, the skill body by
-    test_commit_skill_preflight_lists_nul_terminated below.
+    `zero_terminated=True` executes the shared caller listing, lib/changed_files.py, which
+    both hooks/review_loop_warn.py and skills/commit/SKILL.md step 1 use.
+    `zero_terminated=False` reproduces the pre-fix non-`-z` form, which is what keeps the
+    assertion below discriminating rather than a restatement of check()'s own behaviour.
+    The callers themselves are guarded by hooks/tests/test_review_loop_warn.py's
+    carriage-return / invalid-UTF-8 tests and by test_commit_skill_preflight_lists_nul_terminated
+    below.
     """
-    flag = ["-z"] if zero_terminated else []
+    if zero_terminated:
+        out = subprocess.run([sys.executable, str(LIB.parent / "changed_files.py"), "--repo", str(tree)],
+                             capture_output=True, check=True).stdout
+        return [p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
     out = b""
-    for cmd in (["diff", "--name-only", *flag, "HEAD"],
-                ["ls-files", "--others", "--exclude-standard", *flag]):
+    for cmd in (["diff", "--name-only", "HEAD"],
+                ["ls-files", "--others", "--exclude-standard"]):
         out += subprocess.run(["git", "-C", str(tree), *cmd],
                               capture_output=True, check=True).stdout
-    sep = "\0" if zero_terminated else "\n"
-    return [p for p in out.decode("utf-8", "surrogateescape").split(sep) if p]
+    return [p for p in out.decode("utf-8", "surrogateescape").split("\n") if p]
 
 
 def test_caller_listing_round_trips_a_carriage_return_path(state, tree):
@@ -282,14 +286,13 @@ def test_caller_listing_round_trips_a_carriage_return_path(state, tree):
 
 
 def test_commit_skill_preflight_lists_nul_terminated():
-    """The other caller of check() is a bash block in a skill body — nothing executes it.
+    """The other caller of check() is a bash block in a skill body.
 
-    hooks/tests/test_review_loop_warn.py has its own carriage-return-path assertion, which executes it;
-    this is the textual counterpart for skills/commit/SKILL.md step 1, worth the strings it
-    names and no more. Without it that block could lose `-z` and both suites would stay green
-    while the pre-flight returned rc 1 forever for any repo holding a path git C-quotes.
-    Anchored on the step-1 heading so it reads the pre-flight block and not the cap-decision
-    block further down, which is read by eye and deliberately keeps the non-`-z` form.
+    The guard: that block lists through lib/changed_files.py (which owns `-z`) and never
+    through porcelain `diff`. test_commit_skill_preflight_stops_when_listing_fails below
+    executes the block; this is its textual counterpart for the `-z`/no-`diff` shape, which
+    an execution on a non-repo cannot see. Anchored on the step-1 heading so it reads the
+    pre-flight block and not the cap-decision block further down, which has its own test.
     """
     skill = (LIB.parent.parent / "skills" / "commit" / "SKILL.md").read_text()
     # Named before the split: a reworded heading otherwise fails as a bare IndexError, which
@@ -306,12 +309,87 @@ def test_commit_skill_preflight_lists_nul_terminated():
     # still inside this block — without pinning the quoting style.
     assert "review_marker.py" in block
     assert "check --repo" in block
-    assert "diff --name-only -z HEAD" in block
-    assert "ls-files --others --exclude-standard -z" in block
+    assert 'changed_files.py" --repo "$W"' in block
+    # the helper's rc must gate check(): read through `< <(...)` it was lost, and an empty
+    # FILES made check() return 0 -- the review skipped on a listing that never ran
+    assert "LISTING_FAILED" in block
+    assert "< <(" not in block
+    # porcelain `git diff` rewrites .git/index on a stat-dirty file (git 2.55.0, measured 2026-10-06)
+    assert "diff --name-only" not in block
     assert "read -r -d ''" in block
     # -z suppresses quoting outright, so the flag left beside it would read as still
     # carrying a case of its own.
     assert "core.quotePath" not in block
+
+
+def test_commit_skill_cap_decision_block_reads_without_diff():
+    skill = (LIB.parent.parent / "skills" / "commit" / "SKILL.md").read_text()
+    anchor = "**Decide the review cap here, on both paths.**"
+    assert anchor in skill
+    block = skill.split(anchor, 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+    assert "changed_files.py" in block
+    assert "diff --name-only" not in block
+
+
+SHELLS = [
+    pytest.param(["bash", "-c"], id="bash"),
+    pytest.param(["zsh", "-f", "-c"], id="zsh",
+                 marks=pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not installed")),
+]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_commit_skill_preflight_stops_when_listing_fails(shell, tmp_path):
+    """The helper's rc must gate check(): an empty FILES made check() return 0, skipping
+    the review on a listing that never ran. Executed, not grepped: a block that printed
+    LISTING_FAILED and still called check() would pass any textual assertion."""
+    skill = (LIB.parent.parent / "skills" / "commit" / "SKILL.md").read_text()
+    body = skill.split("### 1. Review-loop pre-flight", 1)[1]
+    block = body.split("```bash", 1)[1].split("```", 1)[0]
+    placeholder = 'W="<absolute path of the task worktree>"'
+    assert placeholder in block
+    not_a_repo = tmp_path / "plain"
+    not_a_repo.mkdir()
+    block = block.replace(placeholder, f'W="{not_a_repo}"')
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(LIB.parent.parent),
+           "REVIEW_MARKER_STATE_FILE": str(tmp_path / "state"), "CLAUDE_CODE_SESSION_ID": "s",
+           "GIT_CEILING_DIRECTORIES": str(tmp_path)}   # basetemp may sit inside a repo
+    r = subprocess.run([*shell, block], capture_output=True, text=True, env=env)
+    assert "LISTING_FAILED rc=2" in r.stdout
+    assert r.returncode == 2
+    # check() never ran: on a non-repo its only output is repo_identity's stderr exit
+    assert "repo_identity:" not in r.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_commit_skill_preflight_passes_the_listing_to_check(shell, tmp_path):
+    """Success path of the same block: helper output -> temp file -> FILES -> --files. With a
+    record present, an empty FILES makes check() return 0, so a block that lost the list on
+    the way (temp file removed before the read, a wrong redirect) would pass silently."""
+    skill = (LIB.parent.parent / "skills" / "commit" / "SKILL.md").read_text()
+    body = skill.split("### 1. Review-loop pre-flight", 1)[1]
+    block = body.split("```bash", 1)[1].split("```", 1)[0]
+    placeholder = 'W="<absolute path of the task worktree>"'
+    assert placeholder in block
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    name = "two words.txt"   # zsh would split it if the list went through an unquoted $(...)
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True)
+    (repo / name).write_text("base\n")
+    subprocess.run(["git", "-C", str(repo), "add", name], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(LIB.parent.parent),
+           "REVIEW_MARKER_STATE_FILE": str(tmp_path / "state"), "CLAUDE_CODE_SESSION_ID": "s"}
+    subprocess.run([sys.executable, str(LIB), "record", "--repo", str(repo), "--session", "s"],
+                   env=env, check=True, capture_output=True)
+    (repo / name).write_text("changed\n")
+    later = time.time() + 100   # after the record, which used the real clock
+    os.utime(repo / name, (later, later))
+    r = subprocess.run([*shell, block.replace(placeholder, f'W="{repo}"')],
+                       capture_output=True, text=True, env=env)
+    assert f"{name} changed after the last review" in r.stdout
+    assert r.returncode == 1
 
 
 def test_check_ignores_a_record_for_another_repo(state, tree):
@@ -1132,3 +1210,40 @@ def test_record_compacts_non_ascii_store_on_cp1252(tmp_path):
     assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
     lines = state.read_bytes().decode("utf-8").splitlines()
     assert len(lines) == 1 and lines[0].startswith("gitlab.example/tëam/→★:s1:")
+
+
+@pytest.mark.parametrize("call", [
+    lambda d: rm._tracked_deletions(str(d)),
+    lambda d: rm._is_version_only_bump(str(d), MANIFEST_REL),
+], ids=["tracked_deletions", "version_only_bump"])
+def test_git_queries_leave_the_index_untouched(manifest_tree, call):
+    """Neither helper may rewrite .git/index: a background check must not take index.lock.
+
+    A porcelain `git diff` refreshes stat-dirty entries and writes the index back, even
+    under GIT_OPTIONAL_LOCKS=0 (git 2.55.0). `manifest_tree` leaves the manifest committed
+    and then only re-stamped, so it is stat-dirty with unchanged content: enough for a
+    pathspec'd refresh in _is_version_only_bump and an unpathspec'd one in _tracked_deletions.
+    Inode and mtime both: the rewrite lands as a rename of a fresh file.
+    """
+    index = manifest_tree / ".git" / "index"
+    before = index.stat()
+    call(manifest_tree)
+    after = index.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+def test_check_leaves_the_index_untouched(state, manifest_tree, capsys):
+    """The whole check() path, not just the two helpers: any porcelain git call added later
+    would take index.lock again from the simo-status background run. Reaches both helpers —
+    a deletion and a manifest stamped past the record — on a stat-dirty tree; the last line
+    proves it, since it is only printed once deleted.py passed as a deletion and the manifest
+    went through _is_version_only_bump.
+    """
+    rm.record(str(manifest_tree), "sess-1")
+    _dirty(manifest_tree, MANIFEST_TEXT)
+    index = manifest_tree / ".git" / "index"
+    before = index.stat()
+    assert rm.check(str(manifest_tree), "sess-1", ["deleted.py", MANIFEST_REL]) == 1
+    after = index.stat()
+    assert capsys.readouterr().out.endswith(f"{MANIFEST_REL} changed after the last review\n")
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)

@@ -101,7 +101,7 @@ Append-only; survives compaction. Path: `docs/plans/<plan-basename>-afk-log.md` 
 
 ## 6. Park (terminal state — before merge)
 
-When `simo-dev:mr-followup` settles: register the completion ping (bg-tasks), disarm (`afk_state.py stop`, stop re-arming wakeups), print the 4-bucket recap (decisions / ⚠ blockers retried / 🔖 deferred spawns / `deferred (needs decision)` In-scope improvements) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
+When `simo-dev:mr-followup` settles: disarm (`afk_state.py stop`, stop re-arming wakeups), print the 4-bucket recap (decisions / ⚠ blockers retried / 🔖 deferred spawns / `deferred (needs decision)` In-scope improvements) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
 
 > Full park procedure + recap wording: `lib/wake-park.md` — load when parking.
 

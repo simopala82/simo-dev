@@ -21,6 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import git_match  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import changed_files  # noqa: E402
 
 
 def _plugin_enabled() -> bool:
@@ -88,36 +90,14 @@ def main() -> int:
     if not toplevel:
         return 0
 
-    # Candidate files, resolved WITHOUT consulting the index -- at PreToolUse the
+    # Candidate files, staged or not -- never limited to `--cached`: at PreToolUse the
     # command has not run yet, so a chained `git add ... && git commit ...` still has
-    # an empty index. Over-approximating is deliberate.
-    # -z on both listings, split on NUL: without it git C-quotes a path holding a tab, a
-    # carriage return, a quote, a backslash or a non-ASCII byte, and that literal is
-    # neither on disk nor in lib/review_marker.py's deletion set, so check() calls the
-    # list unusable. lib/review_marker.py's _tracked_deletions docstring documents this
-    # as an invariant both callers must uphold.
-    # Captured as BYTES, not text=True: universal-newline translation silently rewrites a
-    # literal \r inside a filename to \n, which is exactly the kind of byte -z exists to
-    # preserve (measured: a "we\rird.txt" path came back as "we\nird.txt" under text=True).
+    # an empty index. Over-approximating is deliberate. Read-only, -z, byte-exact:
+    # lib/changed_files.py documents why.
     try:
-        diff_out = subprocess.run(
-            ["git", "-C", toplevel, "diff", "--name-only", "-z", "HEAD"],
-            capture_output=True,
-        ).stdout
-        untracked_out = subprocess.run(
-            ["git", "-C", toplevel, "ls-files", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-        ).stdout
-    except OSError:
-        return 0
-    # surrogateescape, not "replace": lib/review_marker.py's _tracked_deletions decodes the
-    # same kind of raw -z path with surrogateescape, and the two must agree on the exact
-    # string for a filename holding a genuinely invalid UTF-8 byte -- "replace" collapses it
-    # to U+FFFD (lossy, re-encodes to different bytes), while surrogateescape round-trips.
-    files = sorted({
-        f.decode("utf-8", errors="surrogateescape")
-        for f in (diff_out + untracked_out).split(b"\0") if f
-    })
+        files = changed_files.candidates(toplevel)
+    except (OSError, subprocess.CalledProcessError):
+        return 0   # the hook never blocks on its own failure; a failed listing skips the reminder
     if not files:
         return 0
 

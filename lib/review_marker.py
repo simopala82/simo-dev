@@ -307,16 +307,26 @@ def _tracked_deletions(repo: str) -> set[str] | None:
     """Paths this diff removes, staged or not, or None if git cannot say.
 
     Lets check() tell a legitimate deletion apart from an argument that never named a real
-    file. `diff --diff-filter=D HEAD` on purpose, not `ls-files --deleted`: the latter compares
-    the index against the working tree, so a deletion already staged with `git rm` has left the
-    index and is absent from it — a deletion-only commit would fail the check the moment it was
-    staged. This form has exactly the same domain as the `--files` list the caller builds.
+    file. `diff-index --diff-filter=D HEAD` on purpose, not `ls-files --deleted`: the latter
+    compares the index against the working tree, so a deletion already staged with `git rm` has
+    left the index and is absent from it — a deletion-only commit would fail the check the moment
+    it was staged. This form compares HEAD against the working tree, staged or not.
+
+    Plumbing `diff-index`, never porcelain `diff`: the porcelain refreshes stat-dirty entries and
+    writes `.git/index` back through `index.lock`, ignoring GIT_OPTIONAL_LOCKS — a `touch` on any
+    tracked file is enough (git 2.55.0, measured 2026-10-06). check() runs in the background
+    beside sessions that are committing, and their `git add`/`commit` then fails on the lock.
+    `diff-index` does no rename detection, so the source of a staged `git mv` is listed too: a
+    real deletion, and check() only asks this set whether a missing path is one.
     `-z` also means git emits paths raw rather than C-quoted, and a C-quoted path is neither
     present on disk nor a known deletion, so this side and the caller's must agree on quoting.
-    Both callers now list with `-z` too — `hooks/review_loop_warn.py` and
-    `skills/commit/SKILL.md` step 1 — so the agreement holds. `core.quotePath=false`, which
-    step 1 passed before, is not a substitute: it lifts quoting for non-ASCII bytes alone,
-    where `-z` suppresses it entirely. Of six probes a tab, a carriage return, a double quote
+    `hooks/review_loop_warn.py` and `skills/commit/SKILL.md` step 1 both list through
+    `lib/changed_files.py`, which uses `-z` too, so the agreement holds for them. A status-band
+    mod outside this plugin lists with `status --porcelain=v2` under `quotePath=false` and no
+    `-z`: a path it gets back quoted misses here, check() returns 1, and the band reads
+    `review ?` — fail-closed, never false coverage. Callers observed 2026-10-06.
+    `core.quotePath=false`, which step 1 passed before, is not a substitute: it lifts quoting
+    for non-ASCII bytes alone, where `-z` suppresses it entirely. Of six probes a tab, a carriage return, a double quote
     and a backslash still came back quoted from a non-`-z` listing under `quotePath=false`
     (2026-08-16), a space and a non-ASCII byte did not — the non-ASCII half reverses under
     git's default, which the hook leaves unset (2026-08-18); git 2.55.0, samples, not closed
@@ -328,7 +338,7 @@ def _tracked_deletions(repo: str) -> set[str] | None:
     128. The caller fails closed on it.
     """
     try:
-        raw = subprocess.run(["git", "-C", repo, "diff", "--name-only", "--diff-filter=D", "-z", "HEAD"],
+        raw = subprocess.run(["git", "-C", repo, "diff-index", "--name-only", "--diff-filter=D", "-z", "HEAD"],
                              capture_output=True, check=True).stdout
     except (OSError, subprocess.SubprocessError):
         return None
@@ -383,21 +393,26 @@ def _is_version_only_bump(repo: str, path: str) -> bool:
     read — returning False so the caller keeps its existing behaviour, same contract as
     `_tracked_deletions` returning None.
 
+    `diff-index -p` rather than `diff`, so the index is never rewritten — see `_tracked_deletions`;
+    here the manifest itself, touched after the review, is the stat-dirty entry that triggers it.
     `-U0` so the hunk carries no context lines; the `---`/`+++` headers are dropped by name
     because they would otherwise read as a removed and an added line. The three `--no-*` flags
-    each close a way for the caller's own git configuration to disable this helper silently,
-    all three measured: `color.ui=always` prefixes every content line with an ANSI escape, so
-    no line starts with `-`/`+`; a `diff=<driver>` textconv on `*.json` flattens the manifest
-    into a shape the line anchor rejects; `GIT_EXTERNAL_DIFF` or `diff.external` replaces the
-    output wholesale. Each of the three fails toward the loop this helper exists to end, not
-    toward admitting anything — but a fix that turns itself off with no error is the failure
-    mode this repo keeps paying for. A mode-only change (`old mode`/`new mode`) still rides
-    along unnoticed — it carries no content and is left as a known, harmless gap.
+    each closed a way for the caller's own git configuration to disable this helper silently
+    when it ran porcelain `diff`, all three measured: `color.ui=always` prefixes every content
+    line with an ANSI escape, so no line starts with `-`/`+`; a `diff=<driver>` textconv on
+    `*.json` flattens the manifest into a shape the line anchor rejects; `GIT_EXTERNAL_DIFF` or
+    `diff.external` replaces the output wholesale. `diff-index` ignores all of them even without
+    the flags (one combined probe, git 2.55.0, 2026-10-06), so today they are a guard against a
+    swap back to porcelain, not load-bearing. Each of the three fails toward the loop this
+    helper exists to end, not toward admitting anything — but a fix that turns itself off with
+    no error is the failure mode this repo keeps paying for. A mode-only change (`old mode`/
+    `new mode`) still rides along unnoticed — it carries no content and is left as a known,
+    harmless gap.
     """
     if Path(path).parts[-2:] != (".claude-plugin", "plugin.json"):
         return False
     try:
-        raw = subprocess.run(["git", "-C", repo, "diff", "--no-color", "--no-ext-diff",
+        raw = subprocess.run(["git", "-C", repo, "diff-index", "-p", "--no-color", "--no-ext-diff",
                               "--no-textconv", "-U0", "HEAD", "--", path],
                              capture_output=True, check=True).stdout
     except (OSError, subprocess.SubprocessError):

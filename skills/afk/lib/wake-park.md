@@ -37,21 +37,11 @@ RESUME: <current step + enough context to continue cold>
 
 When `simo-dev:mr-followup` settles (pipeline green or findings handled per its cap):
 
-1. Register the completion ping — nothing found acts on the row; `~/.claude/scripts/cleanup.py` only reports the file as stale:
-
-   ```bash
-   tag="${CLAUDE_CODE_SESSION_ID%%-*}"
-   [ -n "$tag" ] && mkdir -p ~/.config/claude-notify \
-     && printf '%s\n' "$tag: dev-afk: <task> ready for merge" >> ~/.config/claude-notify/bg-tasks
-   ```
-
-   > Why the tag and `printf`, never `echo`: logged in the author's own notes (worth keeping a similar log), section "`bg-tasks`: registering into a queue nothing reads".
-
-2. Disarm — in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"`, since shell state does not survive between Bash calls: `python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` (writes a `stopped` entry for THIS repo+branch; a stale wakeup now exits at §0) and stop re-arming `ScheduleWakeup`. This file is Read-loaded, so `R` lands on the source tree here while the reader in `skills/afk/SKILL.md` §0 resolves the released cache — see that section's note on why the entry format has to stay frozen across a release boundary, and on which way the mismatch fails.
-3. Print the recap in four buckets from the decision-log — **decisions made** (numbered) / **⚠ blockers retried** / **🔖 deferred spawns awaiting your click** / **`deferred (needs decision)` In-scope improvements** — plus MR link + pipeline status:
+1. Disarm — in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"`, since shell state does not survive between Bash calls: `python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` (writes a `stopped` entry for THIS repo+branch; a stale wakeup now exits at §0) and stop re-arming `ScheduleWakeup`. This file is Read-loaded, so `R` lands on the source tree here while the reader in `skills/afk/SKILL.md` §0 resolves the released cache — see that section's note on why the entry format has to stay frozen across a release boundary, and on which way the mismatch fails.
+2. Print the recap in four buckets from the decision-log — **decisions made** (numbered) / **⚠ blockers retried** / **🔖 deferred spawns awaiting your click** / **`deferred (needs decision)` In-scope improvements** — plus MR link + pipeline status:
 
 > "Implementation complete and on the MR, unattended. Decisions: 1) … 2) … . Blockers retried: … . Deferred spawns: … . In-scope improvements deferred (needs decision): … . MR: <link> (pipeline <status>). Reply `merge` to do the final merge, or a number to revisit that choice."
 
 Then stop and wait. `merge` → the ask is satisfied (user typed it) → run the merge. A number → revisit that decision, re-present.
 
-**Protected-branch variant** (§0 guard hit): terminal state is `simo-dev:commit`'s commit+push gate instead — same 3 steps with ping text "ready for commit+push" and the gate's own ask ("Commit + push to `<branch>`?") replacing the `merge` ask. `y` from the returning user satisfies the gate.
+**Protected-branch variant** (§0 guard hit): terminal state is `simo-dev:commit`'s commit+push gate instead — same 2 steps, with the gate's own ask ("Commit + push to `<branch>`?") replacing the `merge` ask. `y` from the returning user satisfies the gate.
