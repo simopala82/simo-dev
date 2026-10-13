@@ -31,12 +31,25 @@ ENV_FAST = {"POLL_INTERVAL": "1", "POLL_MAX_WAIT": "3", "POLL_NOPIPE_MAX_WAIT": 
 TIMEOUT = 30
 
 
-def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT, counter=None):
+def _init_repo(path):
+    """A real one-commit repo, so the script's `git rev-parse HEAD` has an answer."""
+    if not (path / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT, counter=None,
+         init_git=True):
     """Run the real script against a fake `glab` first on PATH. The outer process cwd
     is deliberately NOT <worktree-abs>: the fake refuses to answer unless its own cwd
     is <worktree-abs>, which is what makes the script's internal `cwd=` passthrough
     (replacing the bash body's `cd`) observable -- forgetting it leaves every case
-    green."""
+    green. With init_git the worktree becomes a real repo and the fake answers
+    `--sha` only for its HEAD, so a poll that filters on any other SHA sees nothing."""
     worktree = tmp_path if worktree is None else worktree
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir(exist_ok=True)
@@ -48,8 +61,13 @@ def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT
     shim.chmod(0o755)
 
     run_env = dict(os.environ)
+    for var in ("GIT_DIR", "GIT_WORK_TREE"):
+        run_env.pop(var, None)
     run_env.update(ENV_FAST)
     run_env.update(env or {})
+    run_env["GIT_CEILING_DIRECTORIES"] = str(tmp_path)
+    if init_git:
+        run_env["FAKE_GLAB_HEAD_SHA"] = _init_repo(worktree)
     run_env["PATH"] = "{}{}{}".format(bindir, os.pathsep, run_env["PATH"])
     run_env["FAKE_GLAB_MODE"] = mode
     run_env["FAKE_GLAB_BRANCH"] = BRANCH
@@ -266,8 +284,75 @@ def test_empty_branch_literal_refuses_to_poll(tmp_path):
 
 
 def test_unusable_worktree_literal_refuses_to_poll(tmp_path):
-    r = _run(tmp_path, "success", worktree=tmp_path / "does-not-exist")
+    r = _run(tmp_path, "success", worktree=tmp_path / "does-not-exist", init_git=False)
     assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_older_commits_concluded_pipeline_is_not_reported(tmp_path):
+    """The 2026-10-12 case: right after a push the newest pipeline on the branch
+    belongs to the previous commit and is already `success`. Pre-fix this was rc 0."""
+    r = _run(tmp_path, "success", env={"FAKE_GLAB_STALE_CALLS": "all"})
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NO PIPELINE" in r.stdout
+    assert "Pipeline done" not in r.stdout
+
+
+def test_head_pipeline_appearing_later_is_the_one_reported(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "success", counter=counter,
+             env={"FAKE_GLAB_STALE_CALLS": "1", "POLL_NOPIPE_MAX_WAIT": "20", "POLL_MAX_WAIT": "20"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert counter.read_text().splitlines().count("call") == 2, "reported before HEAD's pipeline appeared"
+
+
+def test_empty_worktree_literal_refuses_to_poll(tmp_path):
+    r = _run(tmp_path, "success", worktree="", init_git=False)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "empty <worktree-abs>" in r.stderr, "rc 1 came from another path, not the guard"
+
+
+def test_worktree_that_is_not_a_git_repo_refuses_to_poll(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r = _run(tmp_path, "success", worktree=plain, init_git=False)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "HEAD" in r.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores mode 000")
+def test_unusable_worktree_mid_poll_ends_with_rc1_not_a_traceback(tmp_path):
+    """Mode 000 on the worktree after the first read: the next `pipeline list` chdir
+    raises PermissionError, which a FileNotFoundError-only handler lets through."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    try:
+        r = _run(tmp_path, "running", worktree=wt,
+                 env={"FAKE_GLAB_CHMOD000_ON_CALL": str(wt), "POLL_MAX_WAIT": "20"})
+    finally:
+        os.chmod(wt, 0o755)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot reach worktree" in r.stderr
+    assert "Permission denied" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the missing exec bit")
+def test_git_that_cannot_run_refuses_to_start_without_a_traceback(tmp_path):
+    """PATH holds only a non-executable `git`: rev-parse raises PermissionError, which
+    must read as an unresolvable HEAD (rc 1), not a traceback."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    bindir = tmp_path / "nogit"
+    bindir.mkdir()
+    (bindir / "git").write_text("#!/bin/sh\n")
+    (bindir / "git").chmod(0o644)
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
+    env["PATH"] = str(bindir)
+    r = subprocess.run([sys.executable, str(SCRIPT)] + [str(wt), BRANCH], capture_output=True,
+                       text=True, timeout=TIMEOUT, env=env, cwd=str(tmp_path))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot resolve HEAD" in r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
 
 
 def test_missing_arguments_refuses_to_poll(tmp_path):

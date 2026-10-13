@@ -19,9 +19,10 @@ Usage: pipeline_poll_gitlab.py <worktree-abs> <branch>
 Exit codes (the verdict):
   0  a pipeline reached a terminal status -- a `failed` one is still 0: the poll
      reports, it does not judge
-  1  refused to start (missing argv, empty <branch>, or <worktree-abs> does not
-     resolve to a real directory)
-  3  no pipeline exists for <branch>, and a reachable forge said so -- after the
+  1  refused to start (missing argv, empty <branch> or <worktree-abs>, <worktree-abs>
+     does not resolve to a real directory, or HEAD does not resolve in it), or glab
+     cannot run in <worktree-abs> (worktree gone mid-poll, glab missing or not executable)
+  3  no pipeline exists for <branch> at HEAD, and a reachable forge said so -- after the
      POLL_NOPIPE_MAX_WAIT ceiling, or at once (a `NO CI CONFIG` line) when the no-CI
      probe below finds no CI config for <branch>
   4  a ceiling came due with no terminal status -- still transitional, a pipeline
@@ -35,6 +36,13 @@ concluded" -- these are different waits, gated on a sticky SEEN flag. POLL_INTER
 (default 30s) is the gap between polls. Both ceilings and the interval are wall
 clock (time.monotonic()), not a count of sleeps, so per-poll `glab` latency counts
 against them.
+
+Pinned to HEAD: the SHA of <worktree-abs>'s HEAD is resolved once at startup and the
+list is filtered server-side with `glab pipeline list --sha <HEAD>`. Right after a push
+the newest pipeline on the branch is still the previous commit's, often already
+concluded; unfiltered, the poll reported it as the verdict. Until HEAD's own pipeline
+appears, nothing is seen, so POLL_NOPIPE_MAX_WAIT bounds the wait. The substring match
+against <branch> stays: a tag pipeline can share the SHA.
 
 No-CI probe: on the first successful `glab pipeline list` read that shows nothing for
 <branch> while nothing has been seen yet, the poll asks GitLab once whether a pipeline
@@ -74,10 +82,21 @@ def _coerce_int(value: str, default: int) -> int:
     return int(value)
 
 
+def _head_sha(worktree: str) -> str:
+    """The commit the poll is about: the worktree's HEAD, just pushed. "" when it
+    cannot be resolved (not a repo, unborn HEAD, missing directory)."""
+    try:
+        result = subprocess.run(["git", "-C", worktree, "rev-parse", "--verify", "--quiet", "HEAD"],
+                                capture_output=True, text=True)
+    except OSError:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _glab_api(worktree: str, endpoint: str) -> tuple[int, object]:
     try:
         result = subprocess.run(["glab", "api", endpoint], cwd=worktree, capture_output=True, text=True)
-    except (FileNotFoundError, NotADirectoryError):
+    except OSError:
         return 1, None  # ambiguous; the next `pipeline list` reports the vanished worktree
     try:
         body = json.loads(result.stdout)
@@ -119,6 +138,16 @@ def main(argv: list[str]) -> int:
               "an unanchored substring match against it would match every pipeline",
               file=sys.stderr)
         return 1
+    if not worktree:
+        print("pipeline_poll_gitlab: empty <worktree-abs> literal — refusing to poll: "
+              "git -C \"\" would read the process cwd's HEAD", file=sys.stderr)
+        return 1
+    sha = _head_sha(worktree)
+    if not sha:
+        print("pipeline_poll_gitlab: cannot resolve HEAD in '{}' — refusing to poll: without "
+              "the pushed commit's SHA the newest pipeline on the branch may belong to an "
+              "older commit".format(worktree), file=sys.stderr)
+        return 1
 
     interval = _coerce_int(os.environ.get("POLL_INTERVAL", ""), 30)
     max_wait = _coerce_int(os.environ.get("POLL_MAX_WAIT", ""), 1800)
@@ -133,11 +162,12 @@ def main(argv: list[str]) -> int:
     probed = False
     while True:
         try:
-            result = subprocess.run(["glab", "pipeline", "list"], cwd=worktree,
+            result = subprocess.run(["glab", "pipeline", "list", "--sha", sha], cwd=worktree,
                                     capture_output=True, text=True)
-        except (FileNotFoundError, NotADirectoryError):
-            print("pipeline_poll_gitlab: cannot reach worktree '{}' — refusing to poll".format(worktree),
-                  file=sys.stderr)
+        except OSError as exc:
+            print("pipeline_poll_gitlab: cannot reach worktree '{}' (worktree gone or unusable, or "
+                  "glab missing) — refusing to poll: {}".format(
+                worktree, exc), file=sys.stderr)
             return 1
         elapsed = int(time.monotonic() - start)
         out, rc, err = result.stdout, result.returncode, result.stderr
@@ -191,9 +221,9 @@ def main(argv: list[str]) -> int:
                       "glab said: {}".format(elapsed, rc, branch, cause))
                 return 5
             if due == "nopipe":
-                print("NO PIPELINE for '{}' after {}s — glab listed pipelines and none "
+                print("NO PIPELINE for '{}' at {} after {}s — glab listed pipelines and none "
                       "matched. Nothing to wait for: this is not a pipeline result.".format(
-                          branch, elapsed))
+                          branch, sha[:12], elapsed))
                 return 3
             print("TIMED OUT after {}s — last status={}, pipeline_seen={}. No terminal "
                   "status was read; go look at the MR.".format(

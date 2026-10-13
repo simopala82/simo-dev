@@ -264,3 +264,50 @@ def test_post_merge_state_no_deploy_roundtrip(tmp_path, capsys):
     assert tc.main(["set", "CUS", "post_merge_state_no_deploy", "Done", "--config", str(path)]) == 0
     assert tc.main(["get", "CUS", "post_merge_state_no_deploy", "--config", str(path)]) == 0
     assert capsys.readouterr().out == "Done"
+
+
+def test_ticket_line_renders_key_and_number(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    tc.set_field("AB", "pr_body_ticket_line", "Closes #{number} ({key})", path)
+    assert tc.main(["ticket-line", "AB-42", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == "\nCloses #42 (AB-42)\n"
+
+
+def test_ticket_line_unconfigured_prints_nothing(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    tc.set_field("AB", "fetch_skill", "x", path)
+    assert tc.main(["ticket-line", "AB-42", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_ticket_line_empty_key_prints_nothing(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    tc.set_field("AB", "pr_body_ticket_line", "Closes #{number}", path)
+    assert tc.main(["ticket-line", "", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_ticket_line_lowercase_key_matches_prefix(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    tc.set_field("AB", "pr_body_ticket_line", "Closes #{number}", path)
+    assert tc.main(["ticket-line", "ab-42", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == "\nCloses #42\n"
+
+
+def test_ticket_line_non_numeric_suffix_prints_nothing(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    tc.set_field("AB", "pr_body_ticket_line", "Closes #{number}", path)
+    for key in ("AB", "AB-", "AB-7 extra"):
+        assert tc.main(["ticket-line", key, "--config", str(path)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_ticket_line_invalid_config_exits_1(tmp_path):
+    path = tmp_path / "tracker.json"
+    path.write_text("{not json")
+    try:
+        tc.main(["ticket-line", "AB-1", "--config", str(path)])
+    except SystemExit as e:
+        assert e.code == 1
+    else:
+        raise AssertionError("expected SystemExit(1)")

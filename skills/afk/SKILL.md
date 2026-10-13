@@ -14,7 +14,7 @@ Mid-session toggle: detect where you are in the canonical flow and drive it to *
 
 **Launch as `/loop simo-dev:afk`** (no interval — self-paced): the §4 dead-man's-switch uses `ScheduleWakeup`, honored only inside `/loop`. Invoked plain → works but no auto-resume after a rate-limit pause; say so once and continue.
 
-Every `afk_state.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` — shell state does not survive between Bash calls — and always passes `--repo "<worktree-abs>"`, the absolute path of the worktree this task is using (the main checkout, if the task has none), so repo+branch identity never depends on the Bash tool's own cwd. Same requirement in `lib/wake-park.md`. On a wakeup re-fire, re-derive `<worktree-abs>` from the `RESUME:` line at the top of the decision-log (§5) — never assume it from the ambient cwd.
+Every `afk_state.py` and `afk_log.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` — shell state does not survive between Bash calls — and always passes `--repo "<worktree-abs>"`, the absolute path of the worktree this task is using (the main checkout, if the task has none), so repo+branch identity never depends on the Bash tool's own cwd. Same requirement in `lib/wake-park.md`. On a wakeup re-fire, take `<worktree-abs>` (and the plan path, if any) from context / the compaction summary first — the no-plan log cannot be found without it — then confirm it against the `RESUME:` line at the top of the decision-log (§5); never assume it from the ambient cwd.
 
 ## Boundaries (inviolable — even unattended, even under "no interruptions" pressure)
 
@@ -34,7 +34,7 @@ While AFK is active (`afk_state.py is-active` exits 0), any **genuine user messa
 
 1. `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` — tombstone for THIS repo+branch (already-armed wakeups exit at §0; other sessions untouched). Binding spelled out here rather than left to the convention above, same as `lib/wake-park.md`'s disarm: an unbound `R` exits rc 2 and writes no tombstone, while items 2-4 still announce "AFK off" — after which a queued wakeup re-fires and AFK resumes driving over the user.
 2. No `ScheduleWakeup` this turn → the `/loop` winds down.
-3. Append `[interrupt] user took over → AFK disarmed` to the decision-log; keep the `RESUME:` line.
+3. Append `[interrupt] user took over → AFK disarmed` to the decision-log (no plan → `afk_log.py append`, §5); keep the `RESUME:` line.
 4. One-line ack ("AFK off — you're driving. `simo-dev:afk` to resume."), then answer interactively — §2 no longer applies.
 
 ## 0. Arm (or honor a prior stop)
@@ -59,7 +59,14 @@ python3 "$R/lib/afk_state.py" arm --repo "<worktree-abs>"
 
 ## 1. Detect current state & resume
 
-Check for a `RESUME:` marker in the decision-log first (fresh window lands here). Else infer:
+Check for a `RESUME:` marker in the decision-log first (fresh window lands here): the plan-sibling log when the task has a plan, otherwise:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/afk_log.py" show --repo "<worktree-abs>"
+```
+
+rc 3 = no log yet → infer below. rc 1 with a `repo_identity:` line = no current branch (e.g. mid-rebase) or `--repo` not a git repo → check `<worktree-abs>`, then resolve HEAD; rc 1 with a traceback = a `⚠` blocker; rc 2 = unbound `R` or bad `--repo`. None of these means "no log". Else infer:
 
 | Observed | Resume at |
 |---|---|
@@ -97,7 +104,26 @@ Wrap external actions in retry discipline (log `⚠`): re-auth + retry on SSO fa
 
 ## 5. Decision-log (single source of truth)
 
-Append-only; survives compaction. Path: `docs/plans/<plan-basename>-afk-log.md` (or `~/.claude/state/afk-<plan-or-branch>.md` if no plan). Single `RESUME:` line at the top, updated each step. Entry format examples: `lib/wake-park.md`.
+Append-only; survives compaction. Single `RESUME:` line at the top, updated each step. Entry format examples: `lib/wake-park.md`.
+
+- **With a plan**: `docs/plans/<plan-basename>-afk-log.md`, written with Write/Edit inside the worktree and committed with the task.
+- **No plan**: `~/.claude/state/afk-<branch>.md` (`/` in the branch → `-`), read and written **only** through `lib/afk_log.py` — never redirects, `cat`, Read, Write or Edit on that path: a command naming it gets a non-persistable permission prompt in sessions whose cwd is another repo. Keep that path out of entry and `RESUME:` text too (the check reads the heredoc body; the script prints the path, don't copy it in).
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/afk_log.py" append --repo "<worktree-abs>" <<'AFKLOG'
+- [gate] direction → y (recommended A)
+AFKLOG
+```
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/afk_log.py" resume --repo "<worktree-abs>" <<'AFKLOG'
+<current step + enough context to continue cold>
+AFKLOG
+```
+
+Read it with `show` (§1). rc 4 = empty input, nothing written. rc 1 with a `repo_identity:` line = no current branch (detached HEAD, e.g. a rebase stopped on a conflict): nothing written — hold the entry and retry once HEAD is back on the branch, never fall back to Write/Edit on the state path.
 
 ## 6. Park (terminal state — before merge)
 

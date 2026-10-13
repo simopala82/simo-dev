@@ -6,6 +6,8 @@ import sys
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 LIB = Path(__file__).parent.parent / "mr_presentation.py"
 FIX = Path(__file__).parent / "fixtures"
 
@@ -59,7 +61,6 @@ def test_prepare_review_mode_uses_review_prompt():
 
 
 def test_load_prompt_template_rejects_unknown_mode():
-    import pytest
     with pytest.raises(ValueError):
         mr_presentation.load_prompt_template("bogus")
 
@@ -151,6 +152,107 @@ def test_lint_flags_quote_inside_unquoted_label():
     diagram = 'flowchart TD\n  A[MRTMP="/tmp/x"]\n'
     problems = lint_mermaid(diagram, "flowchart")
     assert any("quote" in p.lower() and "unquoted" in p.lower() for p in problems)
+
+
+QUOTED_SHAPES = [
+    'H[("store<br/>one entry per day")]',
+    'A[/"x"/]',
+    'A[\\"x"\\]',
+    'A[/"x"\\]',
+    'A[\\"x"/]',
+    'A(["x"])',
+    'A[["x"]]',
+    'A(("x"))',
+    'A((("x")))',
+    'A{{"x"}}',
+    'A>"x"]',
+]
+
+
+@pytest.mark.parametrize("node", QUOTED_SHAPES)
+def test_lint_allows_quoted_label_in_compound_shape(node):
+    problems = lint_mermaid(f"flowchart TD\n  {node}\n", "flowchart")
+    assert not [p for p in problems if p.startswith(("quote inside unquoted label", "nested/unescaped quote in label"))]
+
+
+@pytest.mark.parametrize(
+    "node", ['A[(foo "x")]', 'A[/foo "x"/]', 'A[\\foo "x"\\]', 'A{foo "x"}', 'A{/foo "x"}', 'A[((x) "y")]', 'A[( "x" )]']
+)
+def test_lint_flags_quote_inside_unquoted_compound_shape(node):
+    problems = lint_mermaid(f"flowchart TD\n  {node}\n", "flowchart")
+    assert any(p.startswith("quote inside unquoted label") for p in problems)
+
+
+@pytest.mark.parametrize(
+    "node, prefix",
+    [
+        ('H[("a "b" c")]', "nested/unescaped quote in label"),
+        ('A[/"a "b" c"/]', "nested/unescaped quote in label"),
+        ('H[("parse <T> value")]', "literal angle bracket in label"),
+        ('A[("x"]', "nested/unescaped quote in label"),
+        ('A[/"x"]', "nested/unescaped quote in label"),
+        ('A[\\"x"]', "nested/unescaped quote in label"),
+    ],
+)
+def test_lint_flags_nested_quote_and_angle_in_compound_shape(node, prefix):
+    problems = lint_mermaid(f"flowchart TD\n  {node}\n", "flowchart")
+    assert any(p.startswith(prefix) for p in problems)
+
+
+@pytest.mark.parametrize("node", ['A[\\"x"\\]', 'A[/"x"\\]'])
+def test_lint_allows_quoted_trapezoid_backslash_closer(node):
+    problems = lint_mermaid(f"flowchart TD\n  {node}\n", "flowchart")
+    assert not [p for p in problems if p.startswith("backslash-escaped brackets")]
+
+
+@pytest.mark.parametrize("diagram", [
+    'flowchart TD\n  A>"x"]\n',
+    'flowchart TD\n  A>x]\n',
+    'flowchart TD\n  A -->|go| B>"x"] --> C["y"]\n',
+    'flowchart TD\n  A-->B>"x"]\n',
+    'flowchart TD\n  A>"x"] --> B>"y"]\n',
+    'flowchart TD\n  A["x>y"] --> B["z"]\n',
+])
+def test_lint_allows_asymmetric_shape_bracket_balance(diagram):
+    assert lint_mermaid(diagram, "flowchart") == []
+
+
+@pytest.mark.parametrize("diagram", [
+    'flowchart TD\n  A[x<br>y]\n',
+    'flowchart TD\n  A[x>y]\n',
+    'flowchart TD\n  A[x</b>]\n',
+    'flowchart TD\n  A[if a>b]\n',
+    'flowchart TD\n  A>"x"] --> B[a x>y]\n',
+    'sequenceDiagram\n  A->>B: x\n',
+])
+def test_lint_asymmetric_count_ignores_non_node_angle(diagram):
+    diagram_type = "sequence" if diagram.startswith("sequence") else "flowchart"
+    assert "unbalanced square brackets" not in lint_mermaid(diagram, diagram_type)
+
+
+@pytest.mark.parametrize("diagram", [
+    'flowchart TD\n  A>"x"] --> B["y"\n',
+    'flowchart TD\n  A["x>y"\n',
+    'flowchart TD\n  A["x"\n  B>"y"]\n',
+    'flowchart TD\n  A>"a[b"] --> B>"y"]\n',
+])
+def test_lint_still_flags_real_square_imbalance_next_to_asymmetric_shape(diagram):
+    assert "unbalanced square brackets" in lint_mermaid(diagram, "flowchart")
+
+
+def test_lint_still_flags_backslash_escaped_bracket_in_label():
+    problems = lint_mermaid('flowchart TD\n  A["list\\[0\\]"]\n', "flowchart")
+    assert any(p.startswith("backslash-escaped brackets") for p in problems)
+
+
+def test_lint_flags_lone_backslash_closer_not_after_quote():
+    problems = lint_mermaid('flowchart TD\n  A["list[0\\]"]\n', "flowchart")
+    assert any(p.startswith("backslash-escaped brackets") for p in problems)
+
+
+def test_lint_flags_plain_bracket_label_closed_by_backslash():
+    problems = lint_mermaid('flowchart TD\n  A["x"\\]\n', "flowchart")
+    assert any(p.startswith("nested/unescaped quote in label") for p in problems)
 
 
 def test_lint_flags_angle_bracket_in_quoted_label():

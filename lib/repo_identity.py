@@ -9,7 +9,7 @@ repo-id = normalized origin URL, fallback: absolute path of the main repo
 `repo_path` resolves identity from that directory instead of the process cwd
 (fixes worktree cwd divergence — see CLAUDE.md gotcha).
 
-Importers: lib/afk_state.py, lib/review_marker.py, plus a private-only module
+Importers: lib/afk_state.py, lib/afk_log.py, lib/review_marker.py, plus a private-only module
 not part of the public export.
 """
 from __future__ import annotations

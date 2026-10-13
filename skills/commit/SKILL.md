@@ -246,8 +246,12 @@ MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-form
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 python3 "$R/lib/mr_presentation.py" --assemble --mode create \
   --presentation-json "$MRTMP/mr_pres.json" --context-file "$MRTMP/mr_ctx.json" > "$MRTMP/mr_body.md"
-python3 "$R/lib/also_fixed_ledger.py" section --repo "$W" >> "$MRTMP/mr_body.md" || echo "LEDGER_FAILED rc=$? — mr_body.md lacks the Also fixed section; fix and re-run this block"
+python3 "$R/lib/also_fixed_ledger.py" section --repo "$W" >> "$MRTMP/mr_body.md" || echo "LEDGER_FAILED rc=$? — mr_body.md lacks the Also fixed section; fix and re-run only this line"
+KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.jira_key "")
+python3 "$R/lib/tracker_config.py" ticket-line "$KEY" >> "$MRTMP/mr_body.md" || echo "TICKET_LINE_FAILED rc=$? — mr_body.md lacks the ticket line; fix and re-run only this line"
 ```
+
+The last line appends the prefix's `pr_body_ticket_line` (e.g. `Closes #{number}`, see `lib/tracker_config.py`) so the forge closes a same-repo issue on merge; unconfigured or no key → appends nothing.
 
 ### 8. Mermaid preview (informational, no gate)
 

@@ -16,12 +16,13 @@ Forward-only, idempotent, opt-out, best-effort. The canonical flow walks the tic
 
 ## Configuring the tracker
 
-Nothing above is JIRA-specific — `lib/tracker_config.py` maps a ticket-key prefix (`CUS`, `ACME`, whatever a project uses) to the commands that fetch, transition and create tickets for it. Config lives at `~/.claude/simo-dev/tracker.json` (global per user, not versioned in this repo; override for tests only via `SIMO_DEV_TRACKER_CONFIG` or `--config`).
+Nothing above is JIRA-specific — `lib/tracker_config.py` maps a ticket-key prefix (`CUS`, `ACME`, whatever a project uses) to the commands and settings the flow uses for its tickets, listed below. Config lives at `~/.claude/simo-dev/tracker.json` (global per user, not versioned in this repo; override for tests only via `SIMO_DEV_TRACKER_CONFIG` or `--config`).
 
 ```bash
 python3 lib/tracker_config.py get <PREFIX> <FIELD>
 python3 lib/tracker_config.py set <PREFIX> <FIELD> <VALUE>
 python3 lib/tracker_config.py run <PREFIX> <FIELD> [ARGS...]
+python3 lib/tracker_config.py ticket-line <KEY>
 ```
 
 Fields, one per prefix:
@@ -35,6 +36,10 @@ Fields, one per prefix:
 - `next_subtask_cmd` — invoked as `<CMD> <leaf-key> [--resolved-at <state>]` after the post-merge transition; prints one JSON line with the leaf's umbrella, its next ready sibling sub-tasks, the pending ones with a reason, and whether every sub-task is Done. Sole consumer: `simo-dev:mr-followup` step 8.6. Empty stdout (or unconfigured) = no-op.
 - `scope_fetch_cmd` — fetches ticket-view text for `lib/jira_scope.py`; `-` means explicitly declined, treated the same as unconfigured.
 - `requirements_review_cmd` — writes a drafted Requirements/Acceptance Criteria block back to the ticket; invoked at `task-intake` step 4.5 (ticket mode) or step 5.5 (prompt mode).
+- `comment_cmd` — invoked as `<CMD> <key> <body-file>`; posts the file as one ticket comment. Every gate comment the flow posts goes through it (`lib/post_tracker_comment.py`).
+- `link_cmd` — invoked as `<CMD> <blocked-key> <blocker-key>`; records a "blocked by" link, already-linked counts as success (`task-intake` step 2.5).
+- `assign_cmd` — invoked as `<CMD> <key>`; assigns the ticket to the current user, idempotent (`task-intake` step 5.6).
+- `pr_body_ticket_line` — a template, not a command: `{key}` and `{number}` (the digits after the key's last dash) are substituted and the line is appended to the MR/PR body `simo-dev:commit` step 7 generates. Typical value for a tracker backed by the same repo's issues: `Closes #{number}`, so the forge closes the issue on merge. A key not ending in `-<digits>` gets no line. Preview with `ticket-line <KEY>`.
 
 An unconfigured field is a silent no-op, never an error — a read-only tracker, or no tracker at all, both work out of the box. To disable tracker integration entirely for a repo or session: `DEV_FLOW_NO_TRACKER=1` or a `.claude/no-tracker` marker file.
 

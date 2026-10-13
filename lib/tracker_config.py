@@ -16,10 +16,20 @@ Usage:
     tracker_config.py get <PREFIX> <FIELD> [--config PATH]
     tracker_config.py set <PREFIX> <FIELD> <VALUE> [--config PATH]
     tracker_config.py run [--config PATH] <PREFIX> <FIELD> [ARGS...]
+    tracker_config.py ticket-line <KEY> [--config PATH]
 
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
 supports_subtasks, post_merge_state, post_merge_state_no_deploy, scope_fetch_cmd, comment_cmd,
-link_cmd, assign_cmd, requirements_review_cmd, next_subtask_cmd.
+link_cmd, assign_cmd, requirements_review_cmd, next_subtask_cmd,
+pr_body_ticket_line.
+
+pr_body_ticket_line is a template, not a command: `ticket-line <KEY>`
+substitutes `{key}` (the full ticket key) and `{number}` (the digits after
+its last dash) and prints the result wrapped in a blank line, ready to append
+to an MR/PR body. Typical value for a tracker backed by the same repo's
+GitHub/GitLab issues: "Closes #{number}", so the forge closes the issue on
+merge. Unconfigured, an empty KEY, or a KEY not ending in -<digits> -> prints
+nothing. simo-dev:commit step 7 is the sole consumer.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -128,7 +138,8 @@ parsed as the config override.
 
 Exit codes:
     0   success (get: value printed, possibly empty; set: written;
-        run: command exited 0, or was a no-op)
+        run: command exited 0, or was a no-op; ticket-line: line printed,
+        possibly empty)
     1   usage error, the existing config file is not valid JSON, or
         (run only) the configured command string is malformed or its
         executable was not found
@@ -166,6 +177,7 @@ FIELDS = (
     "assign_cmd",
     "requirements_review_cmd",
     "next_subtask_cmd",
+    "pr_body_ticket_line",
 )
 
 
@@ -249,6 +261,18 @@ def run_field(prefix: str, field: str, args: list[str], path: Path) -> int:
     return proc.returncode
 
 
+def ticket_line(key: str, path: Path) -> str:
+    if not key:
+        return ""
+    prefix, _, number = key.rpartition("-")
+    if not prefix or not number.isdigit():
+        return ""
+    template = get_field(prefix, "pr_body_ticket_line", path)
+    if not template:
+        return ""
+    return "\n" + template.replace("{key}", key).replace("{number}", number) + "\n"
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description="Read/write the simo-dev tracker config.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -270,11 +294,19 @@ def main(argv: list[str]) -> int:
     r.add_argument("--config", help="override the config path (tests only)")
     r.add_argument("args", nargs=argparse.REMAINDER)
 
+    t = sub.add_parser("ticket-line")
+    t.add_argument("key")
+    t.add_argument("--config", help="override the config path (tests only)")
+
     args = p.parse_args(argv)
     path = Path(args.config) if args.config else config_path()
 
     if args.cmd == "get":
         sys.stdout.write(get_field(args.prefix, args.field, path))
+        return 0
+
+    if args.cmd == "ticket-line":
+        sys.stdout.write(ticket_line(args.key, path))
         return 0
 
     if args.cmd == "run":

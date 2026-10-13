@@ -19,6 +19,19 @@ by FAKE_GLAB_MODE:
   running_then_dead — `running` on the first call, then `unreachable` after it
   running_then_empty — `running` on the first call, then an empty list (rc 0) after it
 
+`pipeline list --sha <X>` is filtered like the real server-side filter: the listed
+pipeline belongs to FAKE_GLAB_HEAD_SHA (required whenever `--sha` is passed, else exit
+67), and with X different from that SHA the answer is the `empty` list, rc 0. Without
+`--sha` the pipeline is listed whatever its SHA — what the pre-fix poll saw.
+FAKE_GLAB_STALE_CALLS makes the pipeline belong to an older commit (SHA `"0"*40`)
+instead: `all` for every call, or an integer N (needs FAKE_GLAB_COUNTER) for the first
+N `pipeline list` calls — the state right after a push, before the new pipeline exists.
+
+FAKE_GLAB_CHMOD000_ON_CALL=<dir> sets that directory to mode 000 on every
+`pipeline list` call (in practice only the first: the next chdir into it fails before
+the fake runs), then answers normally: the next chdir into it raises
+PermissionError — a worktree that became unusable mid-poll.
+
 FAKE_GLAB_DELAY, when set to a number of seconds, sleeps that long before answering. The
 poll's ceilings are wall clock, so per-call latency must count against them; with a delay
 this large a sleep-counted ELAPSED needs several more calls to reach the same ceiling,
@@ -95,6 +108,10 @@ if EXPECT_CWD and os.path.realpath(os.getcwd()) != os.path.realpath(EXPECT_CWD):
     sys.stderr.write("fake_glab: wrong cwd {!r}, expected {!r}\n".format(os.getcwd(), EXPECT_CWD))
     sys.exit(1)
 
+LOCK = os.environ.get("FAKE_GLAB_CHMOD000_ON_CALL")
+if LOCK and sub == "call":
+    os.chmod(LOCK, 0)
+
 if sub == "api":
     endpoint = argv[1]
     api_log = os.environ.get("FAKE_GLAB_API_LOG")
@@ -152,6 +169,23 @@ elif mode == "running_then_dead":
     mode = "running" if calls <= 1 else "unreachable"
 elif mode == "running_then_empty":
     mode = "running" if calls <= 1 else "empty"
+
+sha_arg = argv[argv.index("--sha") + 1] if "--sha" in argv[:-1] else None
+if sha_arg is not None and mode != "unreachable":
+    head = os.environ.get("FAKE_GLAB_HEAD_SHA")
+    if not head:
+        sys.stderr.write("fake_glab: --sha passed but FAKE_GLAB_HEAD_SHA is unset\n")
+        sys.exit(67)
+    stale = os.environ.get("FAKE_GLAB_STALE_CALLS", "0")
+    if stale == "all":
+        pipeline_sha = "0" * 40
+    else:
+        if stale != "0" and not COUNTER:
+            sys.stderr.write("fake_glab: FAKE_GLAB_STALE_CALLS needs FAKE_GLAB_COUNTER\n")
+            sys.exit(66)
+        pipeline_sha = "0" * 40 if stale != "0" and calls <= int(stale) else head
+    if sha_arg != pipeline_sha:
+        mode = "empty"
 
 if mode == "unreachable":
     sys.stderr.write("fake_glab: simulated forge failure\n")

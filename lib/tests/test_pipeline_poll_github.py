@@ -25,11 +25,28 @@ PR = "4242"
 
 ENV_FAST = {"POLL_INTERVAL": "1", "POLL_MAX_WAIT": "3", "POLL_NOPIPE_MAX_WAIT": "2"}
 TIMEOUT = 30
+FAKE_HEAD = "f" * 40
+
+
+def _init_repo(path):
+    """A real one-commit repo, so the script's `git rev-parse HEAD` has an answer."""
+    if not (path / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
 
 
 def _run(tmp_path, mode, pr=PR, env=None, timeout=TIMEOUT, counter=None, args=None,
          expect_pr=PR):
-    """Run the real script with the fake `gh` first on PATH."""
+    """Run the real script with the fake `gh` first on PATH. Default argv is
+    `<pr> <tmp_path>`, with tmp_path a real repo whose HEAD the fake reports as the PR
+    head; the process runs from another directory and the fake answers only from
+    tmp_path, so the script's `cwd=<worktree-abs>` on every gh call is observable. Explicit `args` get FAKE_HEAD instead, a SHA no real HEAD has: fine for the
+    refuse-to-start cases, but a test passing a real worktree there would see a stale
+    PR head."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     shim = bindir / "gh"
@@ -37,8 +54,16 @@ def _run(tmp_path, mode, pr=PR, env=None, timeout=TIMEOUT, counter=None, args=No
     shim.chmod(0o755)
 
     run_env = dict(os.environ)
+    for var in ("GIT_DIR", "GIT_WORK_TREE"):
+        run_env.pop(var, None)
     run_env.update(ENV_FAST)
     run_env.update(env or {})
+    run_env["GIT_CEILING_DIRECTORIES"] = str(tmp_path)
+    run_env["FAKE_GH_HEAD_SHA"] = _init_repo(tmp_path) if args is None else FAKE_HEAD
+    if args is None:
+        run_env["FAKE_GH_EXPECT_CWD"] = str(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(exist_ok=True)
     run_env["PATH"] = "{}{}{}".format(bindir, os.pathsep, run_env["PATH"])
     run_env["FAKE_GH_MODE"] = mode
     run_env["FAKE_GH_PR"] = PR
@@ -47,9 +72,9 @@ def _run(tmp_path, mode, pr=PR, env=None, timeout=TIMEOUT, counter=None, args=No
     if counter is not None:
         run_env["FAKE_GH_COUNTER"] = str(counter)
 
-    argv = [sys.executable, str(SCRIPT)] + (args if args is not None else [pr])
+    argv = [sys.executable, str(SCRIPT)] + (args if args is not None else [pr, str(tmp_path)])
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                          env=run_env, cwd=str(tmp_path))
+                          env=run_env, cwd=str(elsewhere))
 
 
 @pytest.mark.parametrize("mode", ["pass", "fail", "skipping", "cancel"])
@@ -97,6 +122,7 @@ def test_forge_dying_after_first_reply_exits_rc5_not_rc3(tmp_path):
     r = _run(tmp_path, "dying", counter=counter)
     assert r.returncode == 5, r.stdout + r.stderr
     assert "NO CHECKS" not in r.stdout
+    assert "simulated forge failure" in r.stdout, "rc 5 dropped the cause: " + r.stdout
 
 
 def test_forge_dying_while_checks_pending_exits_rc5_not_rc4(tmp_path):
@@ -142,6 +168,110 @@ def test_a_green_poll_never_probes(tmp_path):
 def test_missing_pr_argument_refuses_to_start(tmp_path):
     r = _run(tmp_path, "pass", args=[])
     assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_missing_worktree_argument_refuses_to_start(tmp_path):
+    r = _run(tmp_path, "pass", args=[PR])
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_empty_worktree_literal_refuses_to_start(tmp_path):
+    r = _run(tmp_path, "pass", args=[PR, ""])
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "empty <worktree-abs>" in r.stderr, "rc 1 came from another path, not the guard"
+
+
+def test_unreadable_pr_head_is_unverified_not_no_checks(tmp_path):
+    """The head read fails while the liveness probe answers: nothing is known about
+    HEAD's checks, so rc 5, never rc 3."""
+    r = _run(tmp_path, "pass", env={"FAKE_GH_HEAD_FAIL": "1"})
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert "head read failed" in r.stdout, "rc 5 dropped the cause: " + r.stdout
+
+
+def test_worktree_that_is_not_a_git_repo_refuses_to_start(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r = _run(tmp_path, "pass", args=[PR, str(plain)])
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "HEAD" in r.stderr
+
+
+def test_checks_of_an_older_pr_head_are_not_reported(tmp_path):
+    """Right after a push the PR can still point at the previous commit, whose checks
+    already concluded. Pre-fix this was rc 0."""
+    r = _run(tmp_path, "pass", env={"FAKE_GH_STALE_HEAD_CALLS": "all"})
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "All checks concluded" not in r.stdout
+    assert "NO CHECKS for" in r.stdout, "lost the head-mismatch line callers are told to read"
+
+
+def test_checks_read_only_once_the_pr_head_is_head(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "pass", counter=counter,
+             env={"FAKE_GH_STALE_HEAD_CALLS": "1", "POLL_NOPIPE_MAX_WAIT": "20", "POLL_MAX_WAIT": "20"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    tokens = counter.read_text().split()
+    assert tokens.count("head") == 2 and tokens.count("checks") == 1, tokens
+
+
+def test_head_moving_past_head_after_checks_seen_ends_at_once(tmp_path):
+    counter = tmp_path / "calls"
+    r = _run(tmp_path, "pending", counter=counter,
+             env={"FAKE_GH_HEAD_MOVED_AFTER": "1", "POLL_NOPIPE_MAX_WAIT": "20", "POLL_MAX_WAIT": "20"})
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "HEAD MOVED" in r.stdout
+    assert counter.read_text().split().count("checks") == 1, "kept polling past a moved head"
+
+
+def test_worktree_vanishing_mid_poll_ends_with_rc1_not_a_traceback(tmp_path):
+    """The first head read deletes the worktree; the next gh call can no longer run
+    there and the poll must say so in one line, rc 1."""
+    r = _run(tmp_path, "pass", env={"FAKE_GH_STALE_HEAD_CALLS": "all",
+                                    "FAKE_GH_RMTREE_ON_HEAD": str(tmp_path),
+                                    "POLL_NOPIPE_MAX_WAIT": "20", "POLL_MAX_WAIT": "20"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot run gh in worktree" in r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores mode 000")
+def test_unusable_worktree_mid_poll_ends_with_rc1_not_a_traceback(tmp_path):
+    """Mode 000 on the worktree: the next gh call's chdir raises PermissionError, which
+    a FileNotFoundError-only handler would let through as a traceback."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    _init_repo(wt)
+    try:
+        r = _run(tmp_path, "pass", args=[PR, str(wt)],
+                 env={"FAKE_GH_STALE_HEAD_CALLS": "all",
+                      "FAKE_GH_CHMOD000_ON_HEAD": str(wt),
+                      "POLL_NOPIPE_MAX_WAIT": "20", "POLL_MAX_WAIT": "20"})
+    finally:
+        os.chmod(wt, 0o755)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot run gh in worktree" in r.stderr
+    assert "Permission denied" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the missing exec bit")
+def test_git_that_cannot_run_refuses_to_start_without_a_traceback(tmp_path):
+    """PATH holds only a non-executable `git`: rev-parse raises PermissionError, which
+    must read as an unresolvable HEAD (rc 1), not a traceback."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    bindir = tmp_path / "nogit"
+    bindir.mkdir()
+    (bindir / "git").write_text("#!/bin/sh\n")
+    (bindir / "git").chmod(0o644)
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
+    env["PATH"] = str(bindir)
+    r = subprocess.run([sys.executable, str(SCRIPT)] + [PR, str(wt)], capture_output=True,
+                       text=True, timeout=TIMEOUT, env=env, cwd=str(tmp_path))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot resolve HEAD" in r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
 
 
 def test_pr_number_reaches_gh(tmp_path):

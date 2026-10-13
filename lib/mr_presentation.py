@@ -51,6 +51,27 @@ EXPECTED_HEADERS = {
     "state": "stateDiagram-v2",
 }
 
+# Asymmetric node `ID>label]` / `ID>"label"]` (flow.jison: idString TAGEND text SQE):
+# `>` opens it, so its `]` has no `[`. A match inside a `[` still open on its line
+# (A[if a>b], A[x<br>y]) is a label, not a node: `_asymmetric_closers` skips it.
+ASYMMETRIC_NODE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_]+>(?:\"[^\"\n]*\"|[^\[\]\"\n]*)\]")
+
+
+def _asymmetric_closers(text: str) -> int:
+    """Count `]` closers owned by asymmetric nodes, line by line, outside any open `[`."""
+    count = 0
+    for line in text.splitlines():
+        depth, pos = 0, 0
+        for m in ASYMMETRIC_NODE.finditer(line):
+            gap = line[pos:m.start()]
+            depth += gap.count("[") - gap.count("]")
+            if depth <= 0:
+                count += 1
+            else:
+                depth += m.group(0).count("[") - m.group(0).count("]")
+            pos = m.end()
+    return count
+
 
 def lint_mermaid(mermaid: str, diagram_type: str) -> list[str]:
     """Lightweight lexical sanity check on a mermaid diagram. Never raises.
@@ -74,11 +95,15 @@ def lint_mermaid(mermaid: str, diagram_type: str) -> list[str]:
     if text.count('"') % 2 != 0:
         problems.append("unbalanced double-quotes")
 
+    asymmetric_closers = _asymmetric_closers(text)
     for open_ch, close_ch, name in (("[", "]", "square"), ("{", "}", "curly"), ("(", ")", "round")):
-        if text.count(open_ch) != text.count(close_ch):
+        closers = text.count(close_ch) - (asymmetric_closers if close_ch == "]" else 0)
+        if text.count(open_ch) != closers:
             problems.append(f"unbalanced {name} brackets")
 
-    if "\\[" in text or "\\]" in text:
+    # `"\]` closes a quoted parallelogram or trapezoid (ID[\"x"\] or ID[/"x"\]), not an escape.
+    # It also exempts the invalid ID["x"\], which the nested-quote check below still flags.
+    if "\\[" in text or "\\]" in text.replace('"\\]', '"]'):
         problems.append("backslash-escaped brackets (\\[ or \\]) — backslash is not an escape character in mermaid")
 
     if re.search(r"&(lt|gt|amp|quot|#39);", text):
@@ -105,11 +130,12 @@ def lint_mermaid(mermaid: str, diagram_type: str) -> list[str]:
         # checks pass this shape silently. Lexical only: this looks at the
         # first quoted span per label, not a real parse of the label's true
         # extent, so text after a nested quote is not inspected further.
-        close_for = {"[": "]", "{": "}"}
-        for m in re.finditer(r"[A-Za-z0-9_]+([\[{])\"([^\"]*)\"", text):
-            close = close_for[m.group(1)]
-            pos = m.end()
-            if pos >= len(text) or text[pos] != close:
+        # Compound shape openers (`[(`, `[/`, `[\`) close with `)]`, `/]` or
+        # `\]`; shapes not opened by `[` plus an optional `(`/`/`/`\`, or a bare `{`
+        # (`([`, `[[`, `{{`, `((`, `(((`, `>`) are still not inspected here.
+        close_for = {"[": ("]",), "{": ("}",), "[(": (")]",), "[/": ("/]", "\\]"), "[\\": ("\\]", "/]")}
+        for m in re.finditer(r"[A-Za-z0-9_]+(\[[(/\\]?|\{)\"([^\"]*)\"", text):
+            if not text.startswith(close_for[m.group(1)], m.end()):
                 problems.append(f"nested/unescaped quote in label: {m.group(0)[:40]}")
             for am in re.finditer(r"<[^<>\n]*>", m.group(2)):
                 if not re.fullmatch(r"/?\s*br\s*/?", am.group(0)[1:-1], re.IGNORECASE):
@@ -119,7 +145,10 @@ def lint_mermaid(mermaid: str, diagram_type: str) -> list[str]:
         # still contains a bare quote later on: e.g. ID[MRTMP="/tmp/x"]. The
         # existing "unquoted node label" check above requires >=2 chars with
         # NO quote to fire, so a body containing one never matches it either.
-        for m in re.finditer(r"[A-Za-z0-9_]+([\[{])[^\[\]{}\"]+\"", text):
+        # `[(`, `[/` and `[\` open the cylinder, parallelogram and trapezoid shapes, whose
+        # quoted form (ID[("x")]) is valid mermaid: the opener is consumed,
+        # and the lookahead stops a backtrack from counting it as body.
+        for m in re.finditer(r"[A-Za-z0-9_]+(?:\[(?:[(/\\]|(?![(/\\]))|\{)[^\[\]{}\"]+\"", text):
             problems.append(f"quote inside unquoted label: {m.group(0)[:40]}")
 
     return problems
