@@ -5,11 +5,11 @@ description: Use after implementation, before commit. Iteratively requests code 
 
 # Dev Review Loop
 
-Pre-commit review iteration. Auto-fix medium+ issues, plus `low` on diff files as In-scope improvements, until clean, then hand off to `simo-dev:commit`.
+Pre-commit review iteration. Auto-fix medium+ issues, plus `low` on diff files per In-scope improvements, until clean, then hand off to `simo-dev:commit`.
 
 ## Severity model
 
-Per `~/.claude/local-marketplace/simo-dev/docs/canonical-flow.md` "Code review severity" — `low` on a file in the diff applied as an In-scope improvement (same file, "In-scope improvements"; step 4), otherwise informational; `medium`/`high`/`critical` auto-fixed (`critical` surfaced even at cap). Findings format: `[severity] file:line — message`, one per line.
+Per `~/.claude/local-marketplace/simo-dev/docs/canonical-flow.md` "Code review severity" — `low` on a file in the diff applied per "In-scope improvements" (same file; step 4), otherwise informational; `medium`/`high`/`critical` auto-fixed (`critical` surfaced even at cap). Findings format: `[severity] file:line — message`, one per line.
 
 ## Steps
 
@@ -96,9 +96,12 @@ BASE_SHA=$(git -C "<worktree-abs>" merge-base HEAD "origin/$BASE")
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 DIFF=$(python3 "$R/lib/diff_capture.py" "<worktree-abs>" --include-untracked -- "$BASE_SHA")
 DIFF_RC=$?
-printf 'rc=%s\n%s\n' "$DIFF_RC" "$DIFF"
+printf 'rc=%s\nBASE_SHA=%s\n%s\n' "$DIFF_RC" "$BASE_SHA" "$DIFF"
 [ $DIFF_RC -eq 0 ] || { echo "STOP: diff capture failed (rc $DIFF_RC) — do not dispatch the reviewer on a partial/empty diff."; exit 1; }
 ```
+
+The printed `BASE_SHA=` value is the literal step 5's branch-point check uses.
+
 Invoke `simo-dev:code-review-protocol` (requesting side), passing `$DIFF` as the diff content for the dispatch prompt and `$BASE_SHA` for its `REPO:`/marker use — in place of that protocol's own default `origin/develop`, avoiding a base mismatch between the two. This dispatch already has a gated, computed diff in hand, so code-review-protocol's own item-1 capture (including its fallback) does not run a second time for this caller — per the note that fallback carries. `$DIFF` is already gated by size at capture (`lib/diff_capture.py`, ~50k-char threshold, same number everywhere in this plugin) — forward it unmodified, never re-sliced downstream. If a trailing `Full diff written to: <path>` line is present, that path can be read with `Read` if the full content is ever needed. Dispatching the reviewer agent directly (instead of via this protocol) skips its anchored `REPO:` first-line rule, and a dispatch without that line writes no review record, so `simo-dev:commit` step 1 runs another full loop.
 
 **Iterations ≥ 2 — memory of prior iterations.** A resume of iteration 1's reviewer needs `SendMessage` callable this session. When it is not already callable — listed only as a deferred tool, or not listed at all — run `ToolSearch` `select:SendMessage` once before choosing; never skip that load because the name is not listed, or every re-review silently becomes a fresh reviewer. Once callable, a resume is cheaper, still holds its own iteration-1 reasoning, and records coverage like a fresh dispatch (`SubagentStop`); when the load returns no schema (or no `ToolSearch` tool exists), always fall back to the fresh `Agent` dispatch described below — never a workaround that fakes a resume (see the trap described below). But `SendMessage` **returns immediately** with `resumed … in the background` — that acknowledgement is not the review. Resume means calling the `SendMessage` tool itself with that agent's id — dispatching a fresh `Agent` call instead, even one whose prompt opens with `to: <agentId> ...` to **simulate** a resume, spawns a brand-new session with none of iteration 1's memory and no `REPO:` line as its first line, so it writes no attributable review record at all. It can still read the diff fresh and return a coherent-looking review, so nothing fails at runtime — the gap surfaces only later, at `simo-dev:commit` step 1's `lib/review_marker.py check` (rc 1, "changed after the last review"). Parse the agent's task notification when it arrives; parsing the return value yields zero findings and step 4 reads that as a clean exit. **Never edit files while ANY review is in flight** — resumed or dispatched, and a dispatch is background unless it passes `run_in_background: false`: the record's epoch is the reviewer's conclusion time, so an edit made in that window reads as covered by a review that never saw it. A fresh dispatch is stateless instead. **Both paths carry the memory block** — the caller produced or judged all of it after the resumed agent concluded — in the resume message, or, for a fresh dispatch, **below the `REPO:` line**, never above it: above, the marker stops being line 1 and the record is never written. Open it with "The following were already evaluated, each with the reason given. Do NOT re-flag them unless you can refute the rationale with new evidence.", then three **cumulative** lists — every iteration's entries, never just the last one's:
@@ -119,7 +122,7 @@ Regex `^\[(low|medium|high|critical)\]\s+([^:]+):(\d+)\s+—\s+(.+)$` (file:line
 
 Verdict present, no findings ≥ medium and no applicable `low` → **clean exit**, step 8. A `low` is **applicable** when it sits on a file in the diff, an iteration remains under `CAP` (judged against the current `CAP`), and it was **not already eligible in an earlier iteration**: same file and message as a `low` that was eligible before (an iteration remained under `CAP` then) → not applicable, whatever happened to it — applied, rejected, declined, deferred, ambiguous or escalated. This bounds each `low` to deferring the clean exit at most once. A `low` only listed because it first appeared on the last iteration stays eligible if step 7's escalation later raises `CAP`: the next review re-emits it and this rule lets it in. Else collect medium+ and applicable `low`s for step 5 — including when the applicable `low`s are the only findings (the clean exit is then deferred); note the other `low`s for the summary.
 
-Applicable `low`s are In-scope improvements (`docs/canonical-flow.md` "In-scope improvements"). On the last iteration a `low` is listed only, never applied: editing after a clean exit invalidates the review record (`lib/review_marker.py check` flags the file as changed after the last review) and costs a full extra loop. A `low` needing a user decision → ask; unattended → `deferred (needs decision)`, listed in the report.
+Applicable `low`s are applied; one is an In-scope improvement only on an all-`pre-existing` branch-point check (step 5; `docs/canonical-flow.md` "In-scope improvements"). On the last iteration a `low` is listed only, never applied: editing after a clean exit invalidates the review record (`lib/review_marker.py check` flags the file as changed after the last review) and costs a full extra loop. A `low` needing a user decision → ask; unattended → `deferred (needs decision)`, listed in the report.
 
 ### 5. Validity filter (code-review-protocol rigor)
 
@@ -129,11 +132,20 @@ For each medium+ finding and each collected `low`, before fixing: (1) technicall
 
 No "you're absolutely right" / "great point" — just decide.
 
+Then, before step 6 applies anything, run the branch-point check once on every passing `low`'s targets — its cited `file:line` plus every line its fix will replace or remove, or both sides of a pure insertion (`docs/canonical-flow.md` "In-scope improvements"):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/branch_point_check.py" --repo "<worktree-abs>" --base-sha "<BASE_SHA>" "<file1>:<line1>" "<file2>:<line2>" ...
+```
+
+Skip the call when no `low` passed. Keep the verdicts for step 6. rc ≠ 0, or a target with no output line → `error` for that `low`.
+
 ### 6. Auto-apply fixes
 
 Apply passing fixes via Edit/Write; log each as `[severity] file:line — fix description`. A fix that turns out to need behavior changes not visible at filter time → abort that fix, log `escalated-during-fix: [severity] file:line — reason`, move to unresolved.
 
-Right after applying each In-scope improvement (an applied `low`, a dead-code deletion with its `rg -uu` evidence), append it to the Also-fixed ledger (`docs/canonical-flow.md` "In-scope improvements") — one single-quoted `file — what — why` argument per improvement, `file` relative to the repo root exactly as `git status --porcelain` prints it, a `'` inside a line written as `’`:
+Right after applying each In-scope improvement (an applied `low` whose step-5 targets were all `pre-existing` and that does not complete the branch's own change, a dead-code deletion with its `rg -uu` evidence), append it to the Also-fixed ledger (`docs/canonical-flow.md` "In-scope improvements") — one single-quoted `file — what — why` argument per improvement, `file` relative to the repo root exactly as `git status --porcelain` prints it, a `'` inside a line written as `’`:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
@@ -141,7 +153,7 @@ python3 "$R/lib/also_fixed_ledger.py" add --repo "<worktree-abs>" '<file> — <w
   || echo "LEDGER_FAILED rc=$? — the improvement is not recorded; fix the --repo literal and re-run"
 ```
 
-A later iteration that reverts one runs the same block with `drop` in place of `add`. Skipped on a protected branch (`simo-dev:commit`'s protected-branch detection): that path never reads or clears the ledger.
+A later iteration that reverts one runs the same block with `drop` in place of `add` — only for a line actually added to the ledger. Skipped on a protected branch (`simo-dev:commit`'s protected-branch detection): that path never reads or clears the ledger.
 
 After applying every passing fix for the round, run the plan-drift check on the files just written:
 
@@ -169,7 +181,7 @@ DIFF_CAPTURE_RC=$?
 [ $DIFF_CAPTURE_RC -eq 0 ] || echo "WARNING: diff capture failed (rc $DIFF_CAPTURE_RC) for the report — show this failure in place of item (5)'s content, do not block the rest of step 8 on it."
 ```
 
-Show, in order: (1) summary line (iterations, fixed by severity, unresolved); (2) fix log; (3) rejected findings with rationale; (4) unresolved findings by severity (critical always shown); (5) the script's output above (full diff if small, `--stat` + slices + temp-file path if large — same threshold, no special case for this report versus any other call site); this is the full working-tree-vs-HEAD diff — implementation plus any fixes applied during this loop combined (`review-loop` never commits, per this file's own Notes, so nothing here is committed separately) — not only the incremental per-iteration fixes in isolation; (6) `low` findings NOT applied (last iteration, deferred, rejected — decided at step 4, not here); (7) Also fixed — the lines this loop added to the ledger.
+Show, in order: (1) summary line (iterations, fixed by severity, unresolved); (2) fix log; (3) rejected findings with rationale; (4) unresolved findings by severity (critical always shown); (5) the script's output above (full diff if small, `--stat` + slices + temp-file path if large — same threshold, no special case for this report versus any other call site); this is the full working-tree-vs-HEAD diff — implementation plus any fixes applied during this loop combined (`review-loop` never commits, per this file's own Notes, so nothing here is committed separately) — not only the incremental per-iteration fixes in isolation; (6) `low` findings NOT applied (last iteration, deferred, rejected — decided at step 4, not here); (7) Also fixed — the lines this loop added to the ledger; (8) on its own labelled line, any `low` whose branch-point check was `error` (applied, not ledgered).
 
 Then decide:
 - Clean, ship-flow invocation (proactive trigger) → announce "Review loop clean → `simo-dev:commit`" and invoke `simo-dev:commit` directly (the merge remains the one hard gate downstream). Three cases stop at the report instead:

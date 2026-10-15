@@ -5,7 +5,7 @@ description: Use when stepping away mid-task and wanting the canonical dev flow 
 
 # Dev AFK — unattended completion of the canonical flow
 
-Mid-session toggle: detect where you are in the canonical flow and drive it to **MR + `simo-dev:mr-followup`** without interruption, leaving the user only the final merge. A **driver over the existing flow** — it calls the same skills (`executing-plans`, `simo-dev:review-loop`, `simo-dev:commit`, `simo-dev:mr-followup`) and injects one rule: replace each gate's interactive prompt with its documented recommended/default answer, and log it.
+Mid-session toggle: detect where you are in the canonical flow and drive it to **MR + `simo-dev:mr-followup`** without interruption, leaving the user only the final merge. A **driver over the existing flow** — it calls the same skills (`simo-dev:plan-execute`, `simo-dev:review-loop`, `simo-dev:commit`, `simo-dev:mr-followup`) and injects one rule: replace each gate's interactive prompt with its documented recommended/default answer, and log it.
 
 ## When to use
 
@@ -72,12 +72,12 @@ rc 3 = no log yet → infer below. rc 1 with a `repo_identity:` line = no curren
 |---|---|
 | intake analysis shown, no `y` | answer direction gate → continue |
 | plan written, plan-review pending | answer plan-review → hand off |
-| plan exists, code partially done | resume `executing-plans` |
+| plan exists, code partially done | resume `simo-dev:plan-execute` |
 | implementation done, not reviewed | `simo-dev:review-loop` |
 | review clean, not committed | `simo-dev:commit` |
 | pushed + MR exists | `simo-dev:mr-followup` |
 
-Then run forward to the park point.
+Then run forward to the park point. A `simo-dev:mr-followup` resume, from the `RESUME:` line or the table, can stop on its entry check (`STOP: pending ledger work on …`): handled in §2, never as settled.
 
 ## 2. Gate-override rule (the core)
 
@@ -87,6 +87,7 @@ While AFK is active, auto-answer every gate and **append each answer to the deci
 - **Plan-review gate** → shape-aware (task-intake step 7.5's own gate). On Shape A (no spawn offered — the blockquote has only `y`/`edit <feedback>`/`restart`, no `n` option, and no `Recommended: spawn_task` line above it) → `y`, with the same conditional log line as today: when it printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`; when it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line. On Shape B (recognizable by the `n` option and the `Recommended: spawn_task — ...` line above the gate) → `n` (never `y`, which now means spawn and would trigger the suppressed hand-off in §3) — log `[gate] plan-review (spawn offered) → n (afk never spawns)`.
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
+- **`simo-dev:mr-followup` entry check prints `STOP: pending ledger work on <file>`** → uncommitted Also-fixed ledger work. Never re-invoke mr-followup on it and never treat it as settled (§6 would park with that work uncommitted); `simo-dev:commit` step 10's re-entry is the way back. No `[ledger-stop]` entry in the decision-log yet → in one step append `[ledger-stop] <file> → review-loop` and point `RESUME:` at that leg (§5), then run `simo-dev:review-loop`, whose clean run cascades into `simo-dev:commit` without `--no-mr`. The work gets reviewed and committed whoever left it, so the recap lists that `[ledger-stop]` entry under decisions, where the user can revisit it by number. Park as a ⚠ blocker (§6), never re-running the leg, when the leg ends without a commit after §4's retry discipline, or the STOP comes back with a `[ledger-stop]` entry already logged (any file, including one from an earlier AFK run of the same task — the plan's decision-log keeps it). The leg's commit can succeed on other files and clear the ledger while leaving `<file>` out (e.g. an untracked file it did not stage), so mr-followup then settles without stopping again: §6's dirty-tree check catches it, and any other pending file the single-file STOP line never named.
 - **Any other fork with no clear recommendation** → most conservative / most reversible option, logged.
 - **An In-scope improvement needing a decision** (`docs/canonical-flow.md` "In-scope improvements") → skip it, log `[deferred (needs decision)] …` — never answered as a `[fork]`.
 
@@ -127,7 +128,7 @@ Read it with `show` (§1). rc 4 = empty input, nothing written. rc 1 with a `rep
 
 ## 6. Park (terminal state — before merge)
 
-When `simo-dev:mr-followup` settles: disarm (`afk_state.py stop`, stop re-arming wakeups), print the 4-bucket recap (decisions / ⚠ blockers retried / 🔖 deferred spawns / `deferred (needs decision)` In-scope improvements) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
+When `simo-dev:mr-followup` settles: first list `git -C "<worktree-abs>" status --porcelain --untracked-files=all` and, for every path it shows (the new path of a rename) except the plan's own decision-log file (§5, written after the last commit), append `[⚠ blocker] <path> still uncommitted, not in the MR` to the decision-log through §5's route. No classification: whatever is dirty is not in the MR, whoever left it (on the main checkout it can be another session's). This check runs only here — not at the mid-flow ⚠ blocker parks (§2, Red flags), which park on their own named blocker, nor in the protected-branch variant. Then disarm (`afk_state.py stop`, stop re-arming wakeups), print the 4-bucket recap (decisions / ⚠ blockers / 🔖 deferred spawns / `deferred (needs decision)` In-scope improvements) + MR link + pipeline status, ask the user to reply `merge` (or a number to revisit a decision), then stop and wait. Protected-branch variant parks at the commit+push gate instead.
 
 > Full park procedure + recap wording: `lib/wake-park.md` — load when parking.
 
@@ -138,7 +139,7 @@ When `simo-dev:mr-followup` settles: disarm (`afk_state.py stop`, stop re-arming
 - About to fire a session-spawn follow-up → suppress and log.
 - About to enter `brainstorming`/`grill-me` → NO (they block on the user); take the recommended option, log.
 - User message arrived and you're tempted to keep driving → NO: that IS the stop signal, disarm and go interactive.
-- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages, and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`. Same for any `simo-dev:commit` step 9 `STOP: could not resolve …` (GitLab username, MR title, MR target branch) and for a failed step-9 `glab mr create` / `gh pr create` call: follow that step's per-cause recovery paragraph, not this line.
+- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages, and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`. Same for any `simo-dev:commit` step 9 `STOP: could not resolve …` (GitLab username, MR title, MR target branch) and for a failed step-9 `glab mr create` / `gh pr create` call: follow that step's per-cause recovery paragraph, not this line. Same for `simo-dev:mr-followup`'s `STOP: pending ledger work on …` and a failed or incomplete `[ledger-stop]` leg: follow §2, not this line.
 
 ## Honors
 

@@ -246,3 +246,128 @@ def test_hook_leaves_git_index_untouched(tmp_path):
     after = (idx.stat().st_ino, idx.stat().st_mtime_ns)
     assert "additionalContext" in out   # the hook really reached the listing
     assert before == after
+
+
+def _clean_repo(tmp_path, name="clean"):
+    r = tmp_path / name
+    r.mkdir()
+    subprocess.run(["git", "-C", str(r), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(r), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(r), "config", "user.name", "t"], check=True)
+    (r / "c.txt").write_text("c\n")
+    subprocess.run(["git", "-C", str(r), "add", "c.txt"], check=True)
+    subprocess.run(["git", "-C", str(r), "commit", "-qm", "c"], check=True)
+    return r
+
+
+def test_commit_after_assignment_line_triggers(tmp_path):
+    """simo-dev:commit puts `W=...` on its own first line; the commit sits on line 3.
+    Silent until fixed: on 2026-10-12 an unreviewed edit was committed with no reminder."""
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'W="{repo}"\ngit -C "$W" add -- a.txt\ngit -C "$W" commit -q -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_same_line_assignment_with_chained_add_triggers(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'W="{repo}"; R=/x; git -C "$W" add a.txt && git -C "$W" commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_dollar_var_resolves_to_assignment_not_payload_cwd(tmp_path):
+    repo = _mkrepo(tmp_path)          # dirty, would warn
+    clean = _clean_repo(tmp_path)     # nothing to commit, stays silent
+    cmd = f'W="{clean}"; git -C "$W" commit -m x'
+    assert "additionalContext" not in _warns(cmd, repo, tmp_path / "state")
+
+
+def test_braced_var_resolves(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'W="{repo}"; git -C "${{W}}" commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_cd_var_on_previous_line_resolves(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'W="{repo}"\ncd "$W"\ngit commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_unresolvable_var_falls_back_to_payload_cwd(tmp_path):
+    repo = _mkrepo(tmp_path)
+    assert "additionalContext" in _warns('git -C "$NOPE" commit -m x', repo, tmp_path / "state")
+
+
+def test_heredoc_body_decoy_cannot_retarget(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f"cat <<'EOF' >/dev/null\ngit -C {clean} commit\nEOF\ngit -C {repo} commit -m x"
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_multiline_quoted_decoy_cannot_retarget(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'echo "note\ngit -C {clean} commit\n" >/dev/null; git -C {repo} commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_commit_only_inside_heredoc_stays_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    cmd = "cat <<'EOF' > notes.txt\ngit commit -m x\nEOF"
+    assert "additionalContext" not in _warns(cmd, repo, tmp_path / "state")
+
+
+def test_heredoc_commit_message_body_is_ignored(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f"git -C {repo} commit -q -F - <<'EOF'\nsubject\n\ngit -C {clean} commit\nEOF"
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_nested_quote_in_command_substitution_still_triggers(tmp_path):
+    """`_quoted_at` does not track quotes nested in "$(...)": the apostrophe opens a
+    phantom quote. The newline-blind matcher is the fallback, so this stays loud."""
+    repo = _mkrepo(tmp_path)
+    cmd = 'X="$(echo "it\'s")"; git commit -m x'
+    assert "additionalContext" in _warns(cmd, repo, tmp_path / "state")
+
+
+def test_fallback_path_still_resolves_cd_after_phantom_quote(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'X="$(echo "it\'s")"; cd {repo} && git commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_fallback_path_ignores_later_decoy_cd(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'cd {repo} && cat <<EOF\ncd {clean}\nEOF\nX="$(echo "it\'s")"; git commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_fallback_path_ignores_assignment_inside_heredoc_body(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'W={repo}\ncat <<EOF\nW={clean}\nEOF\nX="$(echo "it\'s")"; git -C "$W" commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_cd_hidden_by_closed_phantom_quote_still_resolves(tmp_path):
+    repo = _mkrepo(tmp_path)
+    clean = _clean_repo(tmp_path)
+    cmd = f'X="$(echo "it\'s")"; cd {repo} # don\'t\ntrue; git commit -m x'
+    assert "additionalContext" in _warns(cmd, clean, tmp_path / "state")
+
+
+def test_reminder_names_mr_followup_exception(tmp_path):
+    repo = _mkrepo(tmp_path)
+    out = _warns("git commit -m x", repo, tmp_path / "state")
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "simo-dev:mr-followup" in ctx
+    assert "own commits" in ctx

@@ -61,7 +61,7 @@ It lands on the old `stash pop` end state for three of the four shapes — unsta
 
 One limit still carries over from the `stash push -u`/`pop` pair this replaces — it skips gitignored and skip-worktree paths (the targeted add no longer additionally sweeps the rest of the checkout, so that half of the original limit no longer applies).
 
-Run as its own Bash call, the `CARRY: do not push` commit fires the review-loop reminder hook, which only prints — noise here, since no ref ever points at that commit and nothing pushes it under its own name. Pasted as part of the whole block it stays silent: the hook's separator pattern has no newline in it.
+The `CARRY: do not push` commit fires the review-loop reminder hook, whether run alone or as part of the whole block. It only prints, and it is expected noise here: no ref ever points at that commit and nothing pushes it under its own name, so it does not call for `review-loop`.
 
 **Carry = move, never copy.** The commit above already moves the files off the base checkout — the `switch` back deletes them there. If you carry selectively or by hand, use `mv` — never `cp`: the untracked original left behind blocks the post-merge `git pull --ff-only` with "untracked working tree files would be overwritten by merge" (incident 2026-07-23; recovery in mr-followup `lib/post-merge.md`).
 

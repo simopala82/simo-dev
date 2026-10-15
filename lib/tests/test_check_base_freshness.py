@@ -165,6 +165,72 @@ def test_files_from_plan_ignores_anchor_token():
     assert cbf.files_from_plan(text) == {"docs/adr/0001-x.md"}
 
 
+def test_files_from_plan_rejects_placeholder_path():
+    """Observed case: a plan declaring `P` in Global Constraints and writing
+    Files bullets as `<P>/...` -- the literal never matches a repo path, so
+    every caller silently saw no overlap."""
+    text = "- Modify: `.claude/CLAUDE.md`\n- Modify: `<P>/docs/canonical-flow.md`\n"
+    with pytest.raises(cbf.PlanPathError, match=r"<P>/docs/canonical-flow\.md") as exc:
+        cbf.files_from_plan(text)
+    assert exc.value.bad == ["<P>/docs/canonical-flow.md"]
+    assert exc.value.valid == {".claude/CLAUDE.md"}
+
+
+def test_files_from_plan_rejects_shell_variable_path():
+    with pytest.raises(cbf.PlanPathError, match=r"\$P/lib/x\.py"):
+        cbf.files_from_plan("- Create: `$P/lib/x.py`\n")
+
+
+def test_files_from_plan_fenced_placeholder_not_an_error():
+    """A plan quoting the forbidden form inside a code fence is not declaring
+    it; literal paths inside fences are still collected (a nested fence can
+    mis-pair, and dropping real paths would be a silent miss)."""
+    text = "```markdown\n- Modify: `<P>/x.md`\n- Create: `lib/fenced.py`\n```\n- Modify: `lib/real.py`\n"
+    assert cbf.files_from_plan(text) == {"lib/fenced.py", "lib/real.py"}
+
+
+def test_files_from_plan_longer_closing_fence_ends_block():
+    """CommonMark: a closing fence may be longer than the opener."""
+    text = "```\n- Modify: `<P>/a.md`\n````\n- Modify: `<P>/real.md`\n"
+    with pytest.raises(cbf.PlanPathError) as exc:
+        cbf.files_from_plan(text)
+    assert exc.value.bad == ["<P>/real.md"]
+
+
+def test_files_from_plan_tilde_fence_and_unclosed_fence():
+    assert cbf.files_from_plan("~~~\n- Modify: `<P>/a.md`\n~~~\n") == set()
+    with pytest.raises(cbf.PlanPathError, match=r"<P>/a\.md"):
+        cbf.files_from_plan("```python\n- Modify: `<P>/a.md`\n")
+
+
+def test_files_from_plan_fence_closes_only_on_same_char_bare_line():
+    """A `~~~` line or an info-string line (```` ```python ````) inside a
+    backtick fence does not close it."""
+    assert cbf.files_from_plan("```\n~~~\n- Modify: `<P>/a.md`\n```\n") == set()
+    assert cbf.files_from_plan("```\n```python\n- Modify: `<P>/a.md`\n```\n") == set()
+
+
+def test_files_from_plan_backtick_in_info_string_is_not_a_fence():
+    """CommonMark: ```` ``` ```` followed by text holding a backtick is inline
+    code, not a fence opener, so it cannot hide the bullets after it."""
+    text = "``` `inline` prose\n- Modify: `<P>/a.md`\n````\n"
+    with pytest.raises(cbf.PlanPathError, match=r"<P>/a\.md"):
+        cbf.files_from_plan(text)
+
+
+def test_files_from_plan_placeholder_inside_and_outside_fence_is_reported():
+    text = "```\n- Modify: `<P>/a.md`\n```\n- Modify: `<P>/a.md`\n"
+    with pytest.raises(cbf.PlanPathError) as exc:
+        cbf.files_from_plan(text)
+    assert exc.value.bad == ["<P>/a.md"]
+
+
+def test_files_from_plan_dollar_inside_real_filename_is_literal():
+    """`$` in a real file name (route files, nested-class files) is not a placeholder."""
+    text = "- Modify: `app/routes/posts.$slug.tsx`\n- Modify: `src/Foo$Bar.java`\n"
+    assert cbf.files_from_plan(text) == {"app/routes/posts.$slug.tsx", "src/Foo$Bar.java"}
+
+
 def test_files_from_plan_dir_unions_multiple_plans(tmp_path):
     plans = tmp_path / "docs" / "plans"
     plans.mkdir(parents=True)
@@ -175,6 +241,25 @@ def test_files_from_plan_dir_unions_multiple_plans(tmp_path):
 
 def test_files_from_plan_dir_empty_when_no_plans(tmp_path):
     assert cbf.files_from_plan_dir(str(tmp_path), "master") == []
+
+
+def test_files_from_plan_dir_collects_placeholder_errors(tmp_path):
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "a.md").write_text("- Modify: `lib/a.py`\n- Modify: `<P>/x.py`\n")
+    (plans / "b.md").write_text("- Modify: `lib/b.py`\n")
+    errors: list[str] = []
+    assert cbf.files_from_plan_dir(str(tmp_path), "master", errors) == ["lib/a.py", "lib/b.py"]
+    assert len(errors) == 1
+    assert errors[0].startswith("docs/plans/a.md: ") and "<P>/x.py" in errors[0]
+
+
+def test_files_from_plan_dir_without_errors_list_propagates(tmp_path):
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "a.md").write_text("- Modify: `<P>/x.py`\n")
+    with pytest.raises(cbf.PlanPathError):
+        cbf.files_from_plan_dir(str(tmp_path), "master")
 
 
 def test_analyze_files_override_replaces_working_tree_scan(tmp_path):
@@ -226,6 +311,49 @@ def test_main_plan_files_flag_derives_from_disk(tmp_path, monkeypatch):
 def test_main_files_and_plan_files_are_mutually_exclusive():
     with pytest.raises(SystemExit):
         cbf.main(["--repo", "/x", "--files", "a.py", "--plan-files"])
+
+
+def test_main_plan_files_placeholder_path_returns_2(tmp_path, monkeypatch, capsys):
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("- Modify: `<P>/README.md`\n")
+    monkeypatch.setattr(cbf, "default_base", lambda repo: "master")
+    monkeypatch.setattr(cbf, "fetch_base", lambda repo, base: None)
+    monkeypatch.setattr(cbf, "analyze", lambda repo, base, files=None: (False, []))  # pre-fix: rc 0, the silent miss
+    assert cbf.main(["--repo", str(tmp_path), "--plan-files"]) == 2
+    err = capsys.readouterr().err
+    assert "docs/plans/p.md" in err and "<P>/README.md" in err
+
+
+def test_main_plan_files_placeholder_does_not_hide_overlap(tmp_path, monkeypatch, capsys):
+    """One broken plan must not turn a real overlap from another plan into
+    rc 2 -- callers read rc 2 as 'no change' (same fail-open the vanished-plan
+    skip guards against)."""
+    clone = _make_repo(tmp_path, advance="overlap", feat_commit=False)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "broken.md").write_text("- Modify: `<P>/x.py`\n")
+    (plans / "real.md").write_text("- Modify: `shared.py`\n")
+    monkeypatch.setattr(cbf, "fetch_base", lambda repo, base: None)
+    assert cbf.main(["--repo", str(clone), "--base", "master", "--plan-files"]) == 1
+    out, err = capsys.readouterr()
+    assert "shared.py" in out
+    assert "docs/plans/broken.md" in err and "<P>/x.py" in err
+
+
+def test_main_plan_files_git_error_still_prints_placeholder_errors(tmp_path, monkeypatch, capsys):
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("- Modify: `<P>/README.md`\n")
+    monkeypatch.setattr(cbf, "default_base", lambda repo: "master")
+    monkeypatch.setattr(cbf, "fetch_base", lambda repo, base: None)
+
+    def boom(repo, base, files=None):
+        raise cbf.GitError("analyze failed")
+
+    monkeypatch.setattr(cbf, "analyze", boom)
+    assert cbf.main(["--repo", str(tmp_path), "--plan-files"]) == 2
+    assert "<P>/README.md" in capsys.readouterr().err
 
 
 def test_main_plan_files_unreadable_plan_returns_2(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 # Knowledge-harvest procedure
 
-Shared three-question routing procedure for the knowledge harvest. Loaded from `commit` step 2
+Shared three-question routing procedure for the knowledge harvest. Loaded from `commit` step 0.7
 (full pass, every commit) and `mr-followup` step 7's clean-exit branch (catch-up pass, scoped to
 what emerged since). Both call sites must actually load this file — never paraphrase it from
 memory.

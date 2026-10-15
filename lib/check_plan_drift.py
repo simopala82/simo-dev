@@ -26,8 +26,8 @@ path-level, not content-level". Resyncing the embedded text is a manual Edit
 by whoever applied the fix -- see that same spec's "Why resync stays
 manual".
 
-Reuses GitError / files_from_plan() / _file_exists_at_ref() / default_base()
-/ fetch_base() from check_base_freshness.py (same lib/ dir) instead of
+Reuses GitError / PlanPathError / files_from_plan() / _file_exists_at_ref()
+/ default_base() / fetch_base() from check_base_freshness.py (same lib/ dir) instead of
 duplicating the plan-file-bullet regex and the merged-plan exclusion.
 
 Usage:
@@ -45,7 +45,10 @@ Exit codes:
        informational signal the calling skill step resolves inline: read
        the flagged plan, resync the embedded text by hand if it drifted,
        continue.
-    2  error -- git failed / base undetectable (never a false rc 1)
+    2  error -- git failed / base undetectable, or a non-merged plan's
+       **Files:** path carries a placeholder (`<P>/...`, `$P/...`) and there
+       is no match to report (never a false rc 1). A real match still wins
+       rc 1; the placeholder lines then go to stderr alongside it.
 """
 from __future__ import annotations
 
@@ -61,10 +64,10 @@ from pathlib import Path
 _LIB_DIR = str(Path(__file__).resolve().parent)
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
-from check_base_freshness import GitError, _file_exists_at_ref, default_base, fetch_base, files_from_plan  # noqa: E402
+from check_base_freshness import GitError, PlanPathError, _file_exists_at_ref, default_base, fetch_base, files_from_plan  # noqa: E402
 
 
-def plans_mentioning(repo: str, base: str, changed_files: list[str]) -> list[tuple[str, str]]:
+def plans_mentioning(repo: str, base: str, changed_files: list[str], errors: list[str] | None = None) -> list[tuple[str, str]]:
     """Return (plan_relpath, changed_file) pairs: every docs/plans/*.md
     under repo, not already present in origin/<base> (a merged plan's
     declared files are stale intent, same exclusion
@@ -72,6 +75,11 @@ def plans_mentioning(repo: str, base: str, changed_files: list[str]) -> list[tup
     declared **Files:** targets intersect changed_files. One pair per
     (plan, file) match -- a plan declaring two of the changed files yields
     two pairs, never merged into one.
+
+    With `errors`, a plan with a placeholder **Files:** path is recorded there
+    as `<plan-relpath>: <message>` and its valid paths still match, so one
+    broken plan never hides another plan's match. With None, PlanPathError
+    propagates.
     """
     changed = set(changed_files)
     pairs: list[tuple[str, str]] = []
@@ -84,7 +92,13 @@ def plans_mentioning(repo: str, base: str, changed_files: list[str]) -> list[tup
         except FileNotFoundError:
             # an untracked plan another session moved away after the glob listed it
             continue
-        declared = files_from_plan(text)
+        try:
+            declared = files_from_plan(text)
+        except PlanPathError as e:
+            if errors is None:
+                raise
+            errors.append(f"{rel}: {e}")
+            declared = e.valid
         for f in sorted(declared & changed):
             pairs.append((rel, f))
     return pairs
@@ -104,18 +118,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--changed-file", dest="changed_files", nargs="+", required=True, metavar="PATH")
     args = parser.parse_args(argv)
 
+    plan_errors: list[str] = []
     try:
         base = args.base or default_base(args.repo)
         fetch_base(args.repo, base)
-        pairs = plans_mentioning(args.repo, base, args.changed_files)
+        pairs = plans_mentioning(args.repo, base, args.changed_files, plan_errors)
     except (GitError, OSError, UnicodeDecodeError) as e:
+        for err in plan_errors:
+            print(err, file=sys.stderr)
         print(str(e), file=sys.stderr)
         return 2
 
     rc, message = decide(pairs)
     if message:
         print(message)
-    return rc
+    for err in plan_errors:
+        print(err, file=sys.stderr)
+    return 2 if plan_errors and rc == 0 else rc
 
 
 if __name__ == "__main__":

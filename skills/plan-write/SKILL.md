@@ -88,6 +88,7 @@ These are plan failures — never write them:
 - "Similar to Task N" — repeat the content; tasks may be read out of order
 - Steps that say what without showing how (code blocks required for code steps)
 - References to names/types not defined in any task
+- A `**Files:**` path written as a placeholder or variable (`<P>/...`, `$P/...`) instead of the literal repo-relative path — an alias defined in Global Constraints is fine in commands, never in Files bullets: the base-freshness and plan-drift checks match those paths exactly and report such a plan as an error
 
 ## Prose targets: anchor and outcome, never the final wording
 
@@ -124,7 +125,8 @@ python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files
 ```
 
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
-- rc 0 or rc 2 → no change to the summary.
+- rc 0 or rc 2 → no change to the summary, except `⚠ Plan files` below.
+- Any rc: stderr lines naming a `docs/plans/...` file with a placeholder **Files:** path → fold them into the Plan summary under a `⚠ Plan files` heading, after `⚠ Base advanced` when present, else after Risks/verification. Only a line naming the plan under review asks for a fix here; one naming another session's plan is listed for information.
 
 Then read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
 
@@ -154,11 +156,11 @@ If any autofix round ran above, re-read the plan file from disk again — the su
 Then show:
 
 - Clickable absolute path; 1-line gist + ticket key + branch.
-- **Plan summary** from the file just read (never memory): Goal (header line), Approach (2-3 bullets from Architecture), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
+- **Plan summary** from the file just read (never memory): Goal (header line), Approach (2-3 bullets from Architecture), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `⚠ Plan files` (only when the check printed placeholder lines — one per flagged plan), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
 
 Path + gist + summary MUST be visible markdown in the chat reply BEFORE the gate prompt — AskUserQuestion IS allowed here, but only in the same turn AFTER the text block (widget fields truncate; never their only carrier). Multiple plan files → one summary block each, single gate.
 
-On rc 1 above, print immediately above the gate prompt: `Recommended: restart — base advanced on file(s) this plan also targets.` (mirroring how a `Recommended:` line reads elsewhere in this plugin). On rc 0 or rc 2, no such line — the gate looks exactly as it does today.
+On rc 1 above, print immediately above the gate prompt: `Recommended: restart — base advanced on file(s) this plan also targets.` (mirroring how a `Recommended:` line reads elsewhere in this plugin). On rc 0 or rc 2, no such line — the gate looks as it does today apart from any `⚠ Plan files` summary entry, which adds no `Recommended:` line of its own.
 
 When the gate findings set above is non-empty, print a second line immediately above the gate prompt: `Recommended: edit — <n> finding(s) from plan critique.` (`<n>` = the gate findings set's size) — on its own line. When `plan_critique` is explicitly disabled (set to `none`), or the gate findings set is empty, no such line prints — this holds even if earlier rounds auto-fixed objective findings, since those no longer need an `edit`. The two `Recommended:` lines are independent and can both print together; when both fire, `Recommended: restart` prints first, `Recommended: edit` second.
 

@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Use whenever committing changes to git — phrases: "commit", "save the work". Always invoke this skill, never run `git commit` directly. Auto-cascades: review-loop pre-flight → commit → push → MR body generation → MR creation → mr-followup, unconditional (no gate), parking before the merge. Opt-out for WIP commits: `--no-mr` arg or `DEV_COMMIT_NO_MR=1`. On protected branches (master/main/develop — out-of-flow fallback) the cascade is replaced by mermaid preview + a single commit+push confirmation, no MR. Optional ticket scope arg. Fourth step of the canonical task flow.
+description: Use whenever committing changes to git — phrases: "commit", "save the work". Always invoke this skill, never run `git commit` directly. Auto-cascades: knowledge harvest → review-loop pre-flight → commit → push → MR body generation → MR creation → mr-followup, unconditional (no gate), parking before the merge. Opt-out for WIP commits: `--no-mr` arg or `DEV_COMMIT_NO_MR=1`. On protected branches (master/main/develop — out-of-flow fallback) the cascade is replaced by mermaid preview + a single commit+push confirmation, no MR. Optional ticket scope arg. Fourth step of the canonical task flow.
 ---
 
 # Dev Commit
@@ -12,7 +12,7 @@ Arguments: optional ticket ID (commit scope); optional `--no-mr` flag (commit + 
 
 MR creation is gate-free, same as push to the feature branch. The merge (the one hard gate left in the publish path) lives outside this skill, run manually by the user after `simo-dev:mr-followup` parks.
 
-**Protected-branch detection (before step 4):** current branch is `master`/`main`/`develop` (or the repo default) → steps 1-3 run unchanged (except step 3's Also-fixed ledger block, skipped there), then switch to the **Protected-Branch Path** (`lib/alt-paths.md`). Steps 4-10 are replaced.
+**Protected-branch detection (before step 4):** current branch is `master`/`main`/`develop` (or the repo default) → steps 0.7-3 run unchanged (except step 3's Also-fixed ledger block, skipped there), then switch to the **Protected-Branch Path** (`lib/alt-paths.md`). Steps 4-10 are replaced.
 
 ## Steps
 
@@ -36,7 +36,7 @@ python3 "$G" --repo "$W"
 
 Deterministic stale-base check (incidents 2026-07-24): STOPs only when `origin/<base>` advanced beyond the branch's fork point **and** the advanced commits touch files this branch also changes — the branch would revert merged work. rc `1` → **stop**, surface the printed overlap + guidance, do not proceed, then recover as below. rc `0` (safe / benign disjoint advance) or `2` (git error — never a false stop) → continue. rc `4` → **stop**, nothing was checked: the resolved path does not exist. `R` resolves the released cache dir while that directory exists, and a released snapshot has not been observed half-written, so the rc `1` reading from a file caught mid-write is not expected from there — it returns once the cache dir is gone and `R` has fallen back to the source working tree. One carve-out, from `docs/plugin-release.md`: a release run from a worktree leaves the claimed cache dir holding *worktree* content, with no version mismatch to signal it, so just after one of those the cache is not a clean snapshot either. rc `4` means the root `R` actually resolved to lacks `lib/check_base_freshness.py` — nothing more: once `[ -d "$R" ]` succeeds the fallback tree is never consulted, so a present-but-incomplete cache dir reaches rc `4` with the source tree intact beside it. What no longer reaches it is a *deleted* cache dir, which `[ -d "$R" ]` routes past (worth logging in a personal notes file if you keep one — section "Releasing a plugin kills the hooks of every already-open session" in the author's own, by title since sections get renumbered). Read the path the message echoes before acting on it: a `/lib/…` root means the `R=` line above was omitted from the block you ran, so re-issue the whole block rather than restarting — restarting rebinds nothing a re-issue would not. Any other root is the plugin dir itself being incomplete, and there restart the session: this step lives in a rendered body, which already carries the substituted path as literal text before any shell runs, so unsetting the variable changes nothing here. Without the `[ -f "$G" ]` test that same state returns rc `2`, which this step reads as continue.
 
-**rc `1` recovery.** Leaving the work committed is not an option here — steps 1, 3 and 4 all read the working diff — so park it in a throwaway commit, rebase, put it back. Announce the park; never park silently.
+**rc `1` recovery.** Leaving the work committed is not an option here — steps 0.7, 1, 3 and 4 all read the working diff — so park it in a throwaway commit, rebase, put it back. Announce the park; never park silently.
 
 ```bash
 W="<absolute path of the task worktree>"
@@ -53,13 +53,26 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 python3 "$R/lib/park_and_rebase.py" restore --repo "$W"
 ```
 
-`park`: rc `0` → rebased, run `restore`. rc `3` → parked, rebase conflicted; resolve, `--continue`, then `restore`. rc `4` → nothing left to restore. rc `5` → **the repo changed and needs attention** (an unfinished rebase, a park commit whose record could not be written or removed, or a park still at `HEAD` under a rewritten subject) — read the message, it carries the recovery command. rc `2` → refused, repo unchanged; reason printed, from several sources. `restore`: rc `0` restored — **read its stderr even so**, since nothing may fail once the reset has landed, so a path it could not re-stage is reported there and not by the code; rc `2` refused with the tree untouched — it resets only when `read_record` finds the record usable, `HEAD` is still the park commit, and the branch still carries the commits the rebase was expected to keep, so a `git rebase --skip` (which git itself suggests at a conflict) is caught instead of leaving a clean-looking tree; that count under-predicts the drops a rebase makes legitimately, so it errs toward stopping and `--allow-dropped` is the way through once the reflog says which happened. `restore` also hands back the pre-park modification time for every parked path whose content is byte-identical, and reports on stderr how many it restored, how many the rebase changed and how many it could not read — so the rebase alone no longer invalidates the step-1 pre-flight, and a path it reports as changed really did change. Then re-run the guarded block at the top of this step — not a bare `python3 …/check_base_freshness.py`, which drops the `[ -f ]` test in the window a release is most likely to land — and continue into step 1, which re-checks the review marker against the restored files. The park does **not** preserve the index/worktree split — staged paths are re-staged, content merged, and any it could not re-stage are named — so work that must survive byte-exact on both sides does not belong in a park.
+`park`: rc `0` → rebased, run `restore`. rc `3` → parked, rebase conflicted; resolve, `--continue`, then `restore`. rc `4` → nothing left to restore. rc `5` → **the repo changed and needs attention** (an unfinished rebase, a park commit whose record could not be written or removed, or a park still at `HEAD` under a rewritten subject) — read the message, it carries the recovery command. rc `2` → refused, repo unchanged; reason printed, from several sources. `restore`: rc `0` restored — **read its stderr even so**, since nothing may fail once the reset has landed, so a path it could not re-stage is reported there and not by the code; rc `2` refused with the tree untouched — it resets only when `read_record` finds the record usable, `HEAD` is still the park commit, and the branch still carries the commits the rebase was expected to keep, so a `git rebase --skip` (which git itself suggests at a conflict) is caught instead of leaving a clean-looking tree; that count under-predicts the drops a rebase makes legitimately, so it errs toward stopping and `--allow-dropped` is the way through once the reflog says which happened. `restore` also hands back the pre-park modification time for every parked path whose content is byte-identical, and reports on stderr how many it restored, how many the rebase changed and how many it could not read — so the rebase alone no longer invalidates the step-1 pre-flight, and a path it reports as changed really did change. Then re-run the guarded block at the top of this step — not a bare `python3 …/check_base_freshness.py`, which drops the `[ -f ]` test in the window a release is most likely to land — and continue into step 0.7, then step 1, which re-checks the review marker against the restored files. The park does **not** preserve the index/worktree split — staged paths are re-staged, content merged, and any it could not re-stage are named — so work that must survive byte-exact on both sides does not belong in a park.
 
 Rejected alternatives, both measured: `git stash` (logged in the author's own notes, §17 — worth keeping a similar log) and hand-clearing with `git checkout -- <file>`, which restores nothing at all from a mixed pathspec list and, run in the **main checkout** on a **tracked** path under `~/.claude`, writes through to another session's uncommitted edit (CLAUDE.md, `~/.claude` symlink rule).
 
+### 0.7. Update documentation and memories
+
+Runs before step 1, so the pre-flight's mtime-based check covers whatever it writes. Change
+touched behavior/conventions → update relevant docs. Then run the full three-question knowledge
+harvest from `lib/knowledge-harvest.md` unconditionally — this is the primary pass, and lands
+harvested docs in the same commit/MR (skip terms `simo-dev:grill-me` already captured this
+session, per that file's dedup framing). Accepted cost: when this step writes something, step 1
+runs a second whole-diff `review-loop` (and its tracker summary comment) even if one just ran.
+On the Protected-Branch Path and the `--no-mr`/WIP opt-out path this is also the *only* pass:
+both skip `mr-followup` entirely (`lib/alt-paths.md`), so lessons from a step-1 `review-loop`
+run are not harvested there (accepted gap; the feature-branch path catches them in
+`mr-followup`'s catch-up).
+
 ### 1. Review-loop pre-flight
 
-Deterministic check — a review already covers the files this commit will stage → skip. Nothing is staged yet at this point, so the list is working-tree modifications **plus untracked files**: step 4 stages untracked files too, and omitting them lets a task whose whole diff is one new file pass the check vacuously.
+Deterministic check — a review already covers the files this commit will stage → skip. Nothing is staged yet at this point, so the list is working-tree modifications **plus untracked files** (step 0.7's harvest writes included): step 4 stages untracked files too, and omitting them lets a task whose whole diff is one new file pass the check vacuously.
 
 ```bash
 W="<absolute path of the task worktree>"
@@ -90,15 +103,6 @@ tr '\0' '\n' < "$T"; rm -f "$T"
 ```
 
 The value is needed twice — on the review-loop invoke above when the pre-flight did not skip, and at step 10's `simo-dev:mr-followup` invoke, which runs whether or not it skipped. Deciding it inside the non-zero branch left the dominant skip path with no value at all.
-
-### 2. Update documentation and memories
-
-Change touched behavior/conventions → update relevant docs. Then run the full three-question
-knowledge harvest from `lib/knowledge-harvest.md` unconditionally, before step 3 — this is the
-primary pass, and lands harvested docs in the same commit/MR (skip terms `simo-dev:grill-me`
-already captured this session, per that file's dedup framing). On the Protected-Branch Path and
-the `--no-mr`/WIP opt-out path this is also the *only* pass: both skip `mr-followup` entirely
-(`lib/alt-paths.md`).
 
 ### 3. Compute commit message
 

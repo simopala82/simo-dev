@@ -154,6 +154,50 @@ def test_main_unreadable_plan_returns_2(tmp_path):
     assert cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", "lib/x.py"]) == 2
 
 
+def test_main_placeholder_path_returns_2(tmp_path, capsys):
+    """A `<P>/...` Files bullet used to match nothing and return rc 0,
+    hiding a real drift; it must surface as an error naming the plan."""
+    clone = _make_repo(tmp_path)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("- Modify: `<P>/lib/x.py`\n")
+    rc = cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", ".claude/x/lib/x.py"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "docs/plans/p.md" in err and "<P>/lib/x.py" in err
+
+
+def test_main_git_error_still_prints_placeholder_errors(tmp_path, monkeypatch, capsys):
+    clone = _make_repo(tmp_path)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("- Modify: `<P>/lib/x.py`\n")
+    real = cpd.plans_mentioning
+
+    def scan_then_fail(repo, base, changed_files, errors=None):
+        real(repo, base, changed_files, errors)
+        raise cpd.GitError("late git failure")
+
+    monkeypatch.setattr(cpd, "plans_mentioning", scan_then_fail)
+    rc = cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", "lib/x.py"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "<P>/lib/x.py" in err and "late git failure" in err
+
+
+def test_main_placeholder_does_not_hide_match(tmp_path, capsys):
+    clone = _make_repo(tmp_path)
+    plans = clone / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("- Modify: `lib/x.py`\n")
+    (plans / "q.md").write_text("- Modify: `<P>/y.py`\n")
+    rc = cpd.main(["--repo", str(clone), "--base", "master", "--changed-file", "lib/x.py"])
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "docs/plans/p.md mentions lib/x.py" in out
+    assert "docs/plans/q.md" in err and "<P>/y.py" in err
+
+
 def test_main_skips_plan_vanished_between_glob_and_read(tmp_path, monkeypatch, capsys):
     """An untracked plan moved away by a concurrent session after the glob
     listed it is skipped -- the remaining plans' matches are still reported,

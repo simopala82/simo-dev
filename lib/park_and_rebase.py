@@ -58,7 +58,7 @@ Exit codes:
                 a park still at HEAD under a rewritten subject; and HEAD's message being
                 unreadable, which is what tells those two apart. A rebase that refuses before
                 starting with nothing parked changes nothing and returns 2 instead.
-    restore:  0 restored -- re-run commit step 0.5's guarded block, then continue into step 1. READ STDERR
+    restore:  0 restored -- re-run commit step 0.5's guarded block, then continue into step 0.7. READ STDERR
                 even here: nothing may fail once the reset has landed, so a path that could not
                 be re-staged is reported on a zero exit, not by the code.
               2 refused; the tree was not touched
@@ -876,7 +876,7 @@ def cmd_restore(args) -> int:
         print(f"warning: restored, but the park record could not be removed ({e}) -- delete "
               f"{RECORD_NAME} from this worktree's git dir before the next park.", file=sys.stderr)
     print("restored to the working tree. Re-run the guarded block at the top of commit step 0.5 "
-          "(not a bare check_base_freshness.py -- that drops the [ -f ] test), then continue into step 1.",
+          "(not a bare check_base_freshness.py -- that drops the [ -f ] test), then continue into step 0.7.",
           file=sys.stderr)
     return 0
 

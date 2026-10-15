@@ -39,7 +39,10 @@ with an explicit file list, for callers that run before the branch has any
 real changes to compare -- a task-intake gate, or the base_freshness_warn.py
 hook -- where the working tree holds only the plan file and a bare
 working-tree scan would always report a false "safe". --plan-files derives
-the list from every `**Files:**` bullet across docs/plans/*.md under --repo.
+the list from every `**Files:**` bullet across docs/plans/*.md under --repo,
+except a path carrying a placeholder (`<P>/...`, `$P/...`): that one is
+reported on stderr as an error naming its plan, and the plan's other paths
+still count.
 --plan-files excludes any docs/plans/*.md file already present in
 origin/<base> (i.e. already merged) -- docs/plans/ accumulates every plan
 ever written with nothing to archive them post-merge, so an unscoped union
@@ -48,7 +51,10 @@ would resurrect stale intent from unrelated, long-since-merged tasks.
 Exit codes:
     0  safe -- base not advanced beyond fork point, or advanced on disjoint files
     1  STOP -- base advanced and overlaps the branch's files; rebase first
-    2  error -- git failed / base undetectable (never a false STOP that blocks a commit)
+    2  error -- git failed / base undetectable, or (--plan-files) a plan's
+       **Files:** path carries a placeholder and there is no overlap to report
+       (never a false STOP that blocks a commit). A real overlap still wins
+       rc 1; the placeholder lines then go to stderr alongside it.
 """
 from __future__ import annotations
 
@@ -62,6 +68,14 @@ from pathlib import Path
 
 class GitError(Exception):
     pass
+
+
+class PlanPathError(ValueError):
+    def __init__(self, bad: list[str], valid: set[str]):
+        listed = ", ".join(f"`{b}`" for b in bad)
+        super().__init__(f"placeholder in **Files:** path {listed} -- write the literal repo-relative path")
+        self.bad = bad
+        self.valid = valid
 
 
 def _git(repo: str, args: list[str]) -> str:
@@ -110,6 +124,29 @@ def _branch_files(repo: str, merge_base: str) -> set[str]:
 
 
 _PLAN_FILE_BULLET_RE = re.compile(r"^- (?:Create|Modify|Test): `([^`]+)`", re.MULTILINE)
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+_PLACEHOLDER_RE = re.compile(r"<[^<>]+>|^\$\{?\w+\}?/")
+
+
+def _strip_fences(text: str) -> str:
+    """Drop fenced code blocks. A fence closes on a bare line of the same
+    character at least as long as the opener (CommonMark). An opener with no
+    later closing fence is kept, not dropped to EOF."""
+    out: list[str] = []
+    fence, held = None, []
+    for line in text.splitlines(keepends=True):
+        m = _FENCE_LINE_RE.match(line)
+        if fence is None:
+            # CommonMark: a backtick fence's info string cannot contain a backtick
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                fence, held = m.group(1), [line]
+            else:
+                out.append(line)
+        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+            fence, held = None, []
+        else:
+            held.append(line)
+    return "".join(out + held)
 
 
 def files_from_plan(text: str) -> set[str]:
@@ -120,10 +157,22 @@ def files_from_plan(text: str) -> set[str]:
     backticks. A subsequent `` at `<anchor>` `` token (the prose-target form)
     is a second, separate backtick pair on the same line and this regex only
     captures the first.
+
+    Callers match these paths exactly, so a path outside a code fence that
+    carries a `<name>` placeholder or a leading `$VAR/` raises PlanPathError
+    (with the plan's valid paths attached); `$` elsewhere in a name is
+    literal. Literal paths are collected everywhere, fences included.
     """
-    paths = set()
+    paths, bad = set(), []
+    unfenced = set(_PLAN_FILE_BULLET_RE.findall(_strip_fences(text)))
     for raw in _PLAN_FILE_BULLET_RE.findall(text):
-        paths.add(re.sub(r":\d+(?:-\d+)?$", "", raw))
+        if _PLACEHOLDER_RE.search(raw):
+            if raw in unfenced and raw not in bad:
+                bad.append(raw)
+        else:
+            paths.add(re.sub(r":\d+(?:-\d+)?$", "", raw))
+    if bad:
+        raise PlanPathError(bad, paths)
     return paths
 
 
@@ -135,10 +184,14 @@ def _file_exists_at_ref(repo: str, ref: str, path: str) -> bool:
         return False
 
 
-def files_from_plan_dir(repo: str, base: str) -> list[str]:
+def files_from_plan_dir(repo: str, base: str, errors: list[str] | None = None) -> list[str]:
     """Union of files_from_plan() over docs/plans/*.md under repo, excluding
     any plan file already present in origin/<base> -- a merged plan's
     declared files are stale intent for the CURRENT branch, not overlap.
+
+    With `errors`, a plan with a placeholder path is recorded there as
+    `<plan-relpath>: <message>` and its valid paths still count, so one broken
+    plan never hides another plan's overlap. With None, PlanPathError propagates.
     """
     paths: set[str] = set()
     for plan_path in sorted(glob.glob(str(Path(repo) / "docs" / "plans" / "*.md"))):
@@ -150,7 +203,13 @@ def files_from_plan_dir(repo: str, base: str) -> list[str]:
         except FileNotFoundError:
             # an untracked plan another session moved away after the glob listed it
             continue
-        paths |= files_from_plan(text)
+        try:
+            paths |= files_from_plan(text)
+        except PlanPathError as e:
+            if errors is None:
+                raise
+            errors.append(f"{rel}: {e}")
+            paths |= e.valid
     return sorted(paths)
 
 
@@ -204,22 +263,27 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--plan-files", action="store_true", help="derive --files from docs/plans/*.md under --repo")
     args = parser.parse_args(argv)
 
+    plan_errors: list[str] = []
     try:
         base = args.base or default_base(args.repo)
         fetch_base(args.repo, base)
-        override_files = files_from_plan_dir(args.repo, base) if args.plan_files else args.files
+        override_files = files_from_plan_dir(args.repo, base, plan_errors) if args.plan_files else args.files
         if override_files is not None:
             advanced, overlap = analyze(args.repo, base, files=override_files)
         else:
             advanced, overlap = analyze(args.repo, base)
     except (GitError, OSError, UnicodeDecodeError) as e:
+        for err in plan_errors:
+            print(err, file=sys.stderr)
         print(str(e), file=sys.stderr)
         return 2
 
     rc, message = decide(advanced, overlap, base)
     if message:
         print(message, file=sys.stderr if rc == 0 else sys.stdout)
-    return rc
+    for err in plan_errors:
+        print(err, file=sys.stderr)
+    return 2 if plan_errors and rc == 0 else rc
 
 
 if __name__ == "__main__":

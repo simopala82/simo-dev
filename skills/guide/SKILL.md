@@ -28,7 +28,7 @@ Personal repos with no linked tracker project drop a `.claude/no-tracker` marker
 
 ## The publish path (one hard gate: the merge)
 
-`simo-dev:commit` auto-cascades: review-loop pre-flight → commit → push → MR body → mermaid preview (informational, not a gate) → MR created immediately, no confirmation, URL printed — verification is delegated to `simo-dev:mr-followup`'s pipeline + review-comment loop, which also commits + pushes each round of auto-fixes unconditionally. A clean `simo-dev:review-loop` run in the ship flow cascades straight into `simo-dev:commit` (standalone review requests and headless runs stop at the report — see its step 8). A pre-push MR-state guard stops any follow-up push whose MR was merged/closed mid-session. WIP opt-out: `--no-mr` / `DEV_COMMIT_NO_MR=1`.
+`simo-dev:commit` auto-cascades: knowledge harvest → review-loop pre-flight → commit → push → MR body → mermaid preview (informational, not a gate) → MR created immediately, no confirmation, URL printed — verification is delegated to `simo-dev:mr-followup`'s pipeline + review-comment loop, which also commits + pushes each round of auto-fixes unconditionally. A clean `simo-dev:review-loop` run in the ship flow cascades straight into `simo-dev:commit` (standalone review requests and headless runs stop at the report — see its step 8). A pre-push MR-state guard stops any follow-up push whose MR was merged/closed mid-session. WIP opt-out: `--no-mr` / `DEV_COMMIT_NO_MR=1`.
 
 `commit` step 10 always auto-invokes `mr-followup` (the auto-publish arm/check mechanism is retired — publish is unconditional; the WIP opt-out stays `--no-mr`).
 
@@ -55,5 +55,7 @@ When a trigger fires and review-loop hasn't run since the last batch of edits, *
 - **Linguistic** — "done" / "ok" / "proceed" / "merge" / "push" / "ship it" / "let's commit".
 - **Implementation** — tests passing, feature complete, batch of edits done.
 - **Structural** — BEFORE `git commit`, `git push`, `git merge`, `glab mr merge`, `gh pr merge`, or `simo-dev:commit`. A PreToolUse hook on `Bash` self-gates to `git commit` (any form, including `git -C <worktree> commit` and chained `add && commit`) and injects a reminder pointing here.
+
+Inside a `simo-dev:mr-followup` run nothing the run does is a trigger: its edits, test runs, commits, pushes, and the user's answers to its own questions. Any other review-loop waits as canonical-flow "In-scope improvements" (Transparency) and `simo-dev:mr-followup` "No Also-fixed ledger work inside a run" describe.
 
 Skip only when clearly useless: trivial doc/typo edit, empty diff, or a review already covers the pending files (`simo-dev:commit` step 1 checks this deterministically — no TTL). A clean run cascades into `simo-dev:commit` (review-loop step 8 exceptions apply); unresolved findings still gate. A clean run lets the next `simo-dev:commit` skip its review pre-flight, until a file changes again.

@@ -73,6 +73,11 @@ directly below. Also not bundled: an `Explore` subagent definition (`~/.claude/a
    >   (any form, including `git -C <worktree> commit` and chained `add && commit`) and injects a
    >   reminder pointing to `simo-dev:guide`.
    >
+   > Inside a `simo-dev:mr-followup` run nothing the run does is a trigger: its edits, test runs,
+   > commits, pushes, and the user's answers to its own questions. Any other review-loop waits as
+   > simo-dev `docs/canonical-flow.md` "In-scope improvements" (Transparency) and
+   > `simo-dev:mr-followup` "No Also-fixed ledger work inside a run" describe.
+   >
    > Skip only when clearly useless: trivial doc/typo edit, empty diff, or a review already covers
    > the pending files (`simo-dev:commit` step 1 checks this deterministically — no TTL). A clean
    > run cascades into `simo-dev:commit` (review-loop step 8 exceptions apply); unresolved
@@ -85,8 +90,11 @@ directly below. Also not bundled: an `Explore` subagent definition (`~/.claude/a
    > done in the same task and declared under "Also fixed" — never spawned as a follow-up. Ask first
    > when it needs a decision or would swell the diff noticeably. Dead code in a file in the diff is
    > deleted when `rg -uu` finds no other use, asked about when search can't verify it, and only
-   > mentioned outside the diff. An ad-hoc one made in the flow is recorded in the Also-fixed
-   > ledger as soon as it is made, or no commit message or MR body declares it. Detail:
+   > mentioned outside the diff. An ad-hoc one made in the flow, when a branch-point check run
+   > before the edit finds its lines all pre-existing, is recorded in the Also-fixed ledger as
+   > soon as it is made, or no commit message or MR body declares it. No ad-hoc edit is
+   > made during a `simo-dev:mr-followup` run: let the run stop at a round boundary, then make
+   > it and commit through `simo-dev:commit` (not `--no-mr`). Detail:
    > `docs/canonical-flow.md` "In-scope improvements".
 5. **Personal identity stays yours.** Tracker user and git author name belong in your own
    `CLAUDE.md` too, but they aren't part of this checklist — set them to your own values, there's
@@ -162,7 +170,8 @@ flowchart TD
         MRCREATE -.-> J2
     end
     RLX -->|clean or skip| HARVEST
-    HARVEST --> CM
+    HARVEST -->|wrote files: step-1 review,\nthen commit, no 2nd harvest| RL
+    HARVEST -->|nothing written / covered| CM
 
     subgraph FOLLOWUP["Follow-up & merge"]
         MF["mr-followup\n(auto-fixes + auto-commits,\nno gate, cap: 5, or lower if passed)"]
@@ -174,7 +183,8 @@ flowchart TD
         CLEANUP["Worktree cleanup\n(auto, pre-approved exception)"]
         JOURNAL["Append dev-flow journal\n(mode, tokens, iterations,\nskills used)"]
         MF --> HARVEST2
-        HARVEST2 --> PARK
+        HARVEST2 -->|wrote files: fix round| MF
+        HARVEST2 -->|nothing new| PARK
         PARK --> MERGE
         MERGE -.-> J3
         MERGE --> VNOTES
@@ -219,7 +229,7 @@ Every other checkpoint (direction, plan review, review-loop exit) has a document
 - **Blue, dashed border** — side-branch skill, not on the canonical chain.
 - **Teal, subroutine (double-bar) shape** — issue-tracker ticket transition: a side-effect of the step it branches from, not a flow step itself.
 
-Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task-intake` asks whether to create a ticket mid-flow (default: no); and `grill-me` captures crystallized domain terms into `CONTEXT.md` / `docs/adr/` inline, as it goes. The diagram's `HARVEST` node in `commit` now runs the full three-question harvest (domain terms, ADRs, gotchas — not just domain terms) — it shares one ask-before-create-if-missing gate with `grill-me`'s inline capture on first use per repo (`skills/commit/lib/knowledge-harvest.md`).
+Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task-intake` asks whether to create a ticket mid-flow (default: no); and `grill-me` captures crystallized domain terms into `CONTEXT.md` / `docs/adr/` inline, as it goes. The diagram's `HARVEST` node in `commit` now runs the full three-question harvest (domain terms, ADRs, gotchas — not just domain terms), before commit's review pre-flight, so anything it writes goes back through `review-loop`; `HARVEST2` writes go back through an `mr-followup` review round the same way — it shares one ask-before-create-if-missing gate with `grill-me`'s inline capture on first use per repo (`skills/commit/lib/knowledge-harvest.md`).
 
 ### Side-branches
 

@@ -34,7 +34,7 @@ Nothing skips this gate — pushing to a protected branch always asks (CLAUDE.md
 ## WIP Opt-Out
 
 If `--no-mr` arg OR `DEV_COMMIT_NO_MR=1` env var:
-- Steps 1-5 execute.
+- Steps 0.5-5 execute (step 0.7 is the only harvest pass on this path).
 - Steps 6-10 SKIPPED.
 - Tell the user: "Commit pushed. MR creation skipped (WIP opt-out). To create MR later, re-run simo-dev:commit without --no-mr."
 
