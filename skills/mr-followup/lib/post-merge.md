@@ -81,7 +81,18 @@ git -C "$MAIN" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null \
 # from "always" to "a few lines of gap", does not eliminate it.
 WT_DIRTY=$(git -C "<path>" status --porcelain 2>/dev/null)
 WT_UNPUSHED=$(git -C "<path>" log HEAD --not --remotes --oneline 2>/dev/null)
-if [ -n "$WT_DIRTY" ] || [ -n "$WT_UNPUSHED" ]; then
+WT_GITDIR=$(git -C "<path>" rev-parse --path-format=absolute --git-dir 2>/dev/null)
+# A worktree the desktop app created for this session (harness path + its marker file in the
+# per-worktree git dir) is never removed here: this session runs in it, and every session it
+# proposes inherits that cwd, so removing it makes them fail with "Working directory no longer
+# exists". The app owns that tree's removal, on archive.
+case "<path>" in */.claude/worktrees/*) WT_HARNESS=1 ;; *) WT_HARNESS= ;; esac
+if [ -n "$WT_HARNESS" ] && [ -n "$WT_GITDIR" ] && [ -e "$WT_GITDIR/claude-desktop-worktree" ]; then
+  echo "post-merge: <path> is a desktop-app worktree — leaving it and branch <name> in place."
+  [ -n "$WT_DIRTY" ] && printf 'Uncommitted:\n%s\n' "$WT_DIRTY"
+  [ -n "$WT_UNPUSHED" ] && printf 'Unpushed commits:\n%s\n' "$WT_UNPUSHED"
+  echo "Archiving this session should make the app remove it (kept when it holds uncommitted changes); the app does not delete branches. Once the tree is gone: git -C \"$MAIN\" branch -D <name>"
+elif [ -n "$WT_DIRTY" ] || [ -n "$WT_UNPUSHED" ]; then
   echo "post-merge: worktree <path> has uncommitted or unpushed work — leaving it in place, not deleting branch <name>."
   [ -n "$WT_DIRTY" ] && printf 'Uncommitted:\n%s\n' "$WT_DIRTY"
   [ -n "$WT_UNPUSHED" ] && printf 'Unpushed commits:\n%s\n' "$WT_UNPUSHED"
@@ -106,7 +117,7 @@ fi
 
 Pull failed with "untracked working tree files would be overwritten by merge" → leftover carried originals (a `cp` during intake carry instead of a move — task-intake `lib/worktree-carry.md`). For each file the error lists: remove it ONLY if identical to the incoming tracked version (`git -C "$MAIN" show "origin/$DEFAULT_BRANCH:<path>" | diff - "$MAIN/<path>"`), then retry the pull once. Content differs → leave the file, report it, continue cleanup.
 
-Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`) — or, when the dirty/unpushed guard fired, report that guard's own skip line verbatim instead (worktree and branch were left in place, not an error). Plus, separately, one line whenever the main-refresh below did not land — that step's own skip line verbatim, or the pull's own error. Neither refresh outcome is a failure of this step, but both leave `$MAIN` behind the remote — and on that skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
+Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`) — or, when the desktop-app skip or the dirty/unpushed guard fired, report that branch's own lines verbatim instead (worktree and branch were left in place, not an error). Plus, separately, one line whenever the main-refresh below did not land — that step's own skip line verbatim, or the pull's own error. Neither refresh outcome is a failure of this step, but both leave `$MAIN` behind the remote — and on that skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
 
 ## Dev-flow journal (step 8.5)
 
@@ -124,8 +135,8 @@ R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/sim
 # repo name, stable from any worktree (--git-common-dir points at the main checkout).
 # Substitute the main checkout's absolute path as a LITERAL — not `$MAIN`, which was set in a
 # different fenced block and is empty here (shell state does not survive between Bash calls),
-# and not a bare call: by this point the task worktree is removed, so a bare call from the
-# unlinked cwd dies with "Unable to read current working directory".
+# and not a bare call: by this point the task worktree is normally removed (a desktop-app one is
+# left in place), so a bare call from an unlinked cwd dies with "Unable to read current working directory".
 REPO=$(basename "$(dirname "$(git -C "<main-checkout-abs>" rev-parse --path-format=absolute --git-common-dir)")")
 BRANCH="<the merged branch name>"      # may already be deleted
 # skills actually fired this task (PostToolUse Skill logger catches auto-fires).
@@ -233,7 +244,7 @@ python3 "$R/lib/skill_log.py" prune --repo "$REPO" --branch "$BRANCH"
 
 ## Next sub-task / parent close (step 8.6)
 
-Runs after the journal. Skip entirely when step 8 printed no `post-merge:` line (no `KEY`). The worktree is gone by now, so reuse `<KEY>`, `<PREFIX>` and `<TARGET>` as literals from that line:
+Runs after the journal. Skip entirely when step 8 printed no `post-merge:` line (no `KEY`). The worktree is gone by now (a desktop-app worktree is left in place, see Worktree cleanup), so reuse `<KEY>`, `<PREFIX>` and `<TARGET>` as literals from that line:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"

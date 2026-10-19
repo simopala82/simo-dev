@@ -12,14 +12,18 @@ fmv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fmv)
 
 
-def test_formats_all_five_fields(monkeypatch, capsys):
+def test_formats_all_fields(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO(
         '{"target_branch": "master", "iid": 42, "state": "opened", '
-        '"draft": false, "source_branch": "feat/x"}'
+        '"draft": false, "source_branch": "feat/x", '
+        '"web_url": "https://forge.example/group/repo/-/merge_requests/42"}'
     ))
     assert fmv.main([]) == 0
     out = capsys.readouterr().out
-    assert out == "BASE=master  IID=42  STATE=opened  DRAFT=false  SOURCE=feat/x\n"
+    assert out == (
+        "BASE=master  IID=42  STATE=opened  DRAFT=false  SOURCE=feat/x  "
+        "URL=https://forge.example/group/repo/-/merge_requests/42\n"
+    )
 
 
 def test_draft_true_prints_lowercase(monkeypatch, capsys):
@@ -29,6 +33,15 @@ def test_draft_true_prints_lowercase(monkeypatch, capsys):
     ))
     assert fmv.main([]) == 0
     assert "DRAFT=true" in capsys.readouterr().out
+
+
+def test_missing_web_url_prints_empty_url(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(
+        '{"target_branch": "master", "iid": 1, "state": "opened", '
+        '"draft": false, "source_branch": "feat/y"}'
+    ))
+    assert fmv.main([]) == 0
+    assert capsys.readouterr().out.endswith("  URL=\n")
 
 
 def test_empty_stdin_exits_1(monkeypatch, capsys):

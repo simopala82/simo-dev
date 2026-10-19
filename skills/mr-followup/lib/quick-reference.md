@@ -2,7 +2,7 @@
 
 | Step                  | GitLab                                                              | GitHub                                                          |
 |-----------------------|---------------------------------------------------------------------|-----------------------------------------------------------------|
-| Find target           | `glab mr view <branch> -F json \| python3 .../lib/format_mr_view.py` | `gh pr view --json number,state,baseRefName`                    |
+| Find target           | `glab mr view <branch> -F json \| python3 .../lib/format_mr_view.py` | `gh pr view --json number,state,isDraft,baseRefName,headRefName,url` |
 | Pipeline status       | `glab pipeline list \| grep <branch>`                               | `gh pr checks <num> --json name,state,conclusion`               |
 | Jobs (name+status)    | `glab api projects/:enc/pipelines/:id/jobs`                         | `gh pr checks <num> --json name,state`                          |
 | Unresolved threads    | REST `/merge_requests/:iid/discussions`                             | GraphQL `pullRequest.reviewThreads` (isResolved, isOutdated)    |
