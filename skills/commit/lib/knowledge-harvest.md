@@ -41,11 +41,14 @@ bullets) — cross-reference so the two never drift apart again.
 ## Routing when the right home isn't in the current repo
 
 Right home in the current repo → minimal direct edit now. Home elsewhere (e.g. a personal
-`~/.claude/reference/*.md` while working in another repo) → when `mcp__ccd_session__spawn_task`
-is not yet callable, run `ToolSearch` `select:mcp__ccd_session__spawn_task` once first (never
-skipped because the name is unlisted); callable after that → use it to route the fact there.
-No schema, or no `ToolSearch` (not available) → surface the fact to the user
-directly instead (no automated path to a home outside the current repo without it).
+`~/.claude/reference/*.md` while working in another repo) → when `mcp__ccd_session__start_session`
+is not yet callable, run `ToolSearch` `select:mcp__ccd_session__start_session` once first (never
+skipped because the name is unlisted); callable after that → `own_initiative` cannot set `cwd`, so say it in one line to the user
+(the fact and its target file); on their yes start it with `initiation` `user_asked`, `cwd` = the
+target repo root, `use_worktree` `true`, a `prompt` naming the fact and target file, a
+`background` of ≥80 chars. No schema, or no `ToolSearch` (not available) → surface
+the fact to the user directly instead (no automated path to a home outside the current repo
+without it).
 
 ## Session-review framing
 

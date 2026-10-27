@@ -121,8 +121,13 @@ Run yourself, fix inline:
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files
+git -C "<worktree-abs>" fetch origin --prune --quiet
+BASE=$(python3 "$R/lib/build_mr_ctx.py" --repo "<worktree-abs>" --print-target) || BASE=""
+echo "CHECK BASE: ${BASE:-<guard default>}"
+if [ -n "$BASE" ]; then python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files --base "$BASE"; else python3 "$R/lib/check_base_freshness.py" --repo "<worktree-abs>" --plan-files; fi
 ```
+
+Same base resolution as `simo-dev:plan-execute`'s base-freshness checkpoint (stacked parent, else `origin/HEAD`, else the guard's default); see there for the rc semantics. A `note:`/`STOP:` on stderr is informational only here: this gate reports an overlap, it never rebases.
 
 - rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
 - rc 0 or rc 2 → no change to the summary, except `⚠ Plan files` below.
@@ -164,7 +169,7 @@ On rc 1 above, print immediately above the gate prompt: `Recommended: restart �
 
 When the gate findings set above is non-empty, print a second line immediately above the gate prompt: `Recommended: edit — <n> finding(s) from plan critique.` (`<n>` = the gate findings set's size) — on its own line. When `plan_critique` is explicitly disabled (set to `none`), or the gate findings set is empty, no such line prints — this holds even if earlier rounds auto-fixed objective findings, since those no longer need an `edit`. The two `Recommended:` lines are independent and can both print together; when both fire, `Recommended: restart` prints first, `Recommended: edit` second.
 
-The "Tasks" and "Files touched" bullets above already produce a task count and a deduped file count for the plan just read — reuse those two counts here, do not recompute them. A plan is "large" when its task count is greater than 5, or its file count is greater than 8. When the plan just read is "large" by either measure, print a third line immediately above the gate prompt — `Suggestion: consider spawn_task — plan has <n> tasks across <m> files.` (`<n>`/`<m>` = the two counts) — after any `Recommended:` line(s) above, on its own line. This suggestion never blocks the gate, never mentions a model (spawn_task takes none), and is independent of both `Recommended:` lines — it can appear alone, or alongside either or both of them.
+The "Tasks" and "Files touched" bullets above already produce a task count and a deduped file count for the plan just read — reuse those two counts here, do not recompute them. A plan is "large" when its task count is greater than 5, or its file count is greater than 8. When the plan just read is "large" by either measure, print a third line immediately above the gate prompt — `Suggestion: consider start_session — plan has <n> tasks across <m> files.` (`<n>`/`<m>` = the two counts) — after any `Recommended:` line(s) above, on its own line. This suggestion never blocks the gate, never mentions a model (it is a one-line hint, not a call spec), and is independent of both `Recommended:` lines — it can appear alone, or alongside either or both of them.
 
 > "Plan written to `<path>`. Review it:
 > - **`y`** — proceed to hand-off (the caller's next step).

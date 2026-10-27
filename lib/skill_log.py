@@ -10,7 +10,7 @@ Line format (TSV, 5 fields):
 A line belongs to a task when its session id matches, OR when repo AND branch
 both match. The session id is the primary key: the hook only sees the session
 cwd, whose branch is the harness branch and not the task branch. repo+branch is
-the key for sessions whose cwd IS the task worktree (spawn_task children,
+the key for sessions whose cwd IS the task worktree (start_session children,
 terminal-launched, unattended headless callers). Legacy 3-field lines predate the session
 column and never match.
 

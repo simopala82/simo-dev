@@ -1,6 +1,6 @@
-# Post-merge procedure — verification notes, cleanup, journal, next sub-task / parent close
+# Post-merge procedure — verification notes, cleanup, journal, next sub-task / parent close, release hook
 
-Loaded on demand from `mr-followup` steps 8 / 8.5 / 8.6, once the user has confirmed the merge.
+Loaded on demand from `mr-followup` steps 8 / 8.5 / 8.6 / 8.7, once the user has confirmed the merge.
 
 ## Verification notes ticket comment
 
@@ -58,7 +58,7 @@ DEFAULT_BRANCH=$(git -C "$MAIN" symbolic-ref --quiet refs/remotes/origin/HEAD 2>
 git -C "$MAIN" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null \
   || { echo "post-merge: origin/$DEFAULT_BRANCH does not exist — run 'git -C \"$MAIN\" remote set-head origin -a', then redo the refresh"; DEFAULT_BRANCH=""; }
 
-# Guard against a concurrent session (or a spawn_task child) still working in this
+# Guard against a concurrent session (or a start_session child) still working in this
 # worktree on the same branch — CLAUDE.md "Spawn tasks for cross-session follow-ups"
 # documents exactly this: another session can commit AND push on the branch a session
 # is still working on. A merge elsewhere does not mean this worktree has nothing of its
@@ -141,7 +141,7 @@ REPO=$(basename "$(dirname "$(git -C "<main-checkout-abs>" rev-parse --path-form
 BRANCH="<the merged branch name>"      # may already be deleted
 # skills actually fired this task (PostToolUse Skill logger catches auto-fires).
 # Session id is the primary key; repo+branch is the key for sessions whose cwd IS
-# the task worktree (spawn_task children, terminal-launched, unattended headless callers).
+# the task worktree (start_session children, terminal-launched, unattended headless callers).
 # Deliberately unbounded in time — see the KNOWN LIMIT in lib/skill_log.py: if
 # this session already ran an earlier task, its skills leak in. Sanity-check the
 # result against what you actually did this task before writing the block.
@@ -232,7 +232,7 @@ behind on purpose, because a session can cover two interleaved tasks. It reports
 `pruned N lines` on stderr. `0` is the expected result whenever the session's cwd
 was not the task worktree (the usual host-launched case — those lines carry the
 harness branch): not a problem, nothing to report in the journal. It is only worth
-a look when the task ran terminal-launched, headless, or as a spawn_task child,
+a look when the task ran terminal-launched, headless, or as a start_session child,
 where a `0` usually means an unsubstituted `BRANCH` placeholder:
 
 ```bash
@@ -264,9 +264,32 @@ python3 "$R/lib/tracker_config.py" run "<PREFIX>" next_subtask_cmd "<KEY>" --res
    No `--leaf-only` (the key is the umbrella) and no `--sync-parent`. On N, nothing else happens: the umbrella stays where the sync left it.
 3. **Next sub-task** — non-empty `ready` → resolve the repo for the first entry: the directories next to the main checkout (`dirname <main-checkout-abs>`) whose name appears as a whole word, case-insensitive, in the entry's `summary` or `components`, and that are a git checkout root (`git -C <dir> rev-parse --show-toplevel` resolves to the same directory as `<dir>` — compare directories, not strings: it resolves symlinks); exactly one match → that path, otherwise unresolved. Then a y/N gate, default N, showing the parent, the entry's key and summary, the resolved repo path (or "unresolved"), plus one line with the other `ready` keys and one line summarising `pending` as `key (reason)`. On `y`:
    - repo unresolved → ask the user for the repo root first;
-   - `mcp__ccd_session__spawn_task` not yet callable → run `ToolSearch` `select:mcp__ccd_session__spawn_task` once before the fork below, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available;
-   - `mcp__ccd_session__spawn_task` available → `title` `Intake <key>`; `tldr` one sentence; `cwd` the resolved repo root (a real repo root, never a subdirectory); `prompt` = the spawned-task marker line (session language, same rule as `simo-dev:task-intake`'s `lib/handoff-spawn.md`, first sub-bullet of its `prompt` bullet), then an instruction to run `simo-dev:task-intake <key>`, the parent key, and the just-merged sibling key and MR URL as context;
+   - `mcp__ccd_session__start_session` not yet callable → run `ToolSearch` `select:mcp__ccd_session__start_session` once before the fork below, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available;
+   - `mcp__ccd_session__start_session` available → `initiation` `user_asked` (the `y` above); `context` `fresh`; `use_worktree` `true`; `source_branch` that repo's base branch `<base-branch>`: its short name with `origin/` stripped (`git -C <repo-root> symbolic-ref --quiet --short refs/remotes/origin/HEAD`), passed only when that resolves and exists as a local branch (`git -C <repo-root> rev-parse --verify --quiet "refs/heads/<base-branch>"`; `start_session` takes an existing local branch only), else omit it; `title` `Intake <key>`; `background` one paragraph (≥80 chars: parent, sibling just merged, what this sub-task covers); `cwd` the resolved repo root when it is not this session's project (a real repo root, never a subdirectory), omitted otherwise; `prompt` = the spawned-task marker line (session language, same rule as `simo-dev:task-intake`'s `lib/handoff-spawn.md`, first sub-bullet of its `prompt` bullet), then an instruction to run `simo-dev:task-intake <key>`, the parent key, and the just-merged sibling key and MR URL as context;
    - not available → print `simo-dev:task-intake <key>` for the user to start by hand.
 4. **Only pending** — empty `ready`, not complete → one line listing `pending` as `key (reason)`.
 
-Example (hypothetical keys): after `PROJ-12` merges at `Ready for Testing`, a JSON with `"ready": [{"key": "PROJ-13", ...}]` and `"pending": [{"key": "PROJ-14", "reason": "blocked-by:PROJ-13"}]` offers one chip for `PROJ-13` and mentions `PROJ-14 (blocked-by:PROJ-13)`.
+Example (hypothetical keys): after `PROJ-12` merges at `Ready for Testing`, a JSON with `"ready": [{"key": "PROJ-13", ...}]` and `"pending": [{"key": "PROJ-14", "reason": "blocked-by:PROJ-13"}]` offers one session start for `PROJ-13` and mentions `PROJ-14 (blocked-by:PROJ-13)`.
+
+## Release hook (step 8.7)
+
+Runs last, once step 8.6 has fully resolved — after the user answered its y/N gate when one was shown, so two gates are never open at once. Any reply to that gate starts this step, even one about something else: run it first, then handle the rest of the reply. Unlike 8.6 it does not need a ticket: it runs with no `KEY`, no `post-merge:` line, and under `DEV_FLOW_NO_TRACKER=1` / `.claude/no-tracker`. Like every step in this file it runs only after the user-confirmed merge. Under `simo-dev:afk` it is never reached: afk disarms and prints its park recap before asking for `merge`, and these steps run only after the user's own `merge` reply.
+
+Look the repo's release skill up from the main checkout (`<main-checkout-abs>` as a literal, the same one the cleanup used — the task worktree is normally gone):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/repo_config.py" get --repo "<main-checkout-abs>" release_skill
+```
+
+- Empty stdout, rc 0 → the repo has no release hook: say nothing, not even an announce line.
+- Non-empty → invoke the Skill tool with `skill` = that value and `args` exactly `post-merge`. That skill owns its own gates and output from there.
+- Non-zero rc → report its stderr line and continue.
+- The Skill call itself fails (skill not installed or enabled, not model-invocable) → one line naming the skill and the error, and continue. The merge already succeeded; this is not an `mr-followup` failure.
+
+Configure it once per repo, from any checkout or by repo-id (`docs/canonical-flow.md` "Configuring per-repo settings"):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+python3 "$R/lib/repo_config.py" set git.example.com/team/app release_skill my-plugin:my-release
+```

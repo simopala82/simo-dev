@@ -66,7 +66,7 @@ def test_invalid_json_falls_through_to_sonnet(tmp_path):
 
 
 def _if_block(lines):
-    start = next(i for i, l in enumerate(lines) if l.startswith("if ["))
+    start = next(i for i, l in enumerate(lines) if l.startswith('if [ "$PLAN_CRITIQUE_MODEL"'))
     end = next(i for i, l in enumerate(lines) if i >= start and l.strip() == "fi")
     return "\n".join(lines[start : end + 1])
 

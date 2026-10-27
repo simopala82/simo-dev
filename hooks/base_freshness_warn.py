@@ -43,6 +43,19 @@ def _git(*args: str) -> str | None:
     return result.stdout.strip()
 
 
+def _is_task_worktree(toplevel: str) -> bool:
+    """A task worktree: canonical <REAL>/.worktrees/<name>, or a desktop-app tree at
+    <REAL>/.claude/worktrees/<name> carrying the app's marker in its own git dir. The
+    marker decides, not the path alone; a main checkout is neither."""
+    parent = Path(toplevel).parent
+    if parent.name == ".worktrees":
+        return True
+    if parent.name != "worktrees" or parent.parent.name != ".claude":
+        return False
+    gitdir = _git("-C", toplevel, "rev-parse", "--absolute-git-dir")
+    return bool(gitdir) and (Path(gitdir) / "claude-desktop-worktree").is_file()
+
+
 def main() -> int:
     if not _plugin_enabled():
         return 0
@@ -64,9 +77,10 @@ def main() -> int:
     if not toplevel:
         return 0
 
-    # Only task-intake worktrees -- canonical layout is <REAL>/.worktrees/<name>. An
-    # edit in a main checkout must never fire.
-    if Path(toplevel).parent.name != ".worktrees":
+    # Only task worktrees (see _is_task_worktree): canonical ones, and every tree the
+    # desktop app creates, since the app marks each one -- a session that skipped
+    # task-intake included. An edit in a main checkout must never fire.
+    if not _is_task_worktree(toplevel):
         return 0
 
     branch = _git("-C", toplevel, "branch", "--show-current")
@@ -98,12 +112,23 @@ def main() -> int:
     except (OSError, UnicodeError):
         pass
 
-    lib = Path(__file__).resolve().parent.parent / "lib" / "check_base_freshness.py"
+    lib_dir = Path(__file__).resolve().parent.parent / "lib"
+    cmd = [sys.executable, str(lib_dir / "check_base_freshness.py"), "--repo", toplevel, "--plan-files", "--no-fetch"]
+    # Same target simo-dev:commit uses (stacked parent, else origin/HEAD); any failure keeps the default.
+    # --prune first, so a parent deleted on the remote is never picked from a stale ref (one-shot hook).
+    # This one fetch serves the guard too (--no-fetch): one network round-trip under the hook's short timeout.
+    _git("-C", toplevel, "fetch", "origin", "--prune", "--no-tags", "--quiet")
     try:
-        result = subprocess.run(
-            [sys.executable, str(lib), "--repo", toplevel, "--plan-files"],
+        target = subprocess.run(
+            [sys.executable, str(lib_dir / "build_mr_ctx.py"), "--repo", toplevel, "--print-target"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
+        if target.returncode == 0 and target.stdout.strip():
+            cmd += ["--base", target.stdout.strip()]
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError:
         return 0
     if result.returncode != 1:

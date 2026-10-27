@@ -32,7 +32,9 @@ Usage:
 
 --repo defaults to cwd (pass the worktree abs path -- the Bash cwd does not
 follow a worktree). --base defaults to the remote default branch
-(git symbolic-ref refs/remotes/origin/HEAD).
+(git symbolic-ref refs/remotes/origin/HEAD). --no-fetch skips the
+`git fetch origin <base>`, for a caller that has just fetched origin itself
+(the base_freshness_warn.py hook, which runs under a short timeout).
 
 --files and --plan-files (mutually exclusive) REPLACE the working-tree scan
 with an explicit file list, for callers that run before the branch has any
@@ -245,7 +247,7 @@ def decide(advanced: bool, overlap: list[str], base: str = "<base>") -> tuple[in
         "so park the pending work first (then restore it) -- see the `simo-dev` commit skill, "
         "step 0.5:\n"
         '  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"\n'
-        '  python3 "$R/lib/park_and_rebase.py" park --repo <repo>\n'
+        f'  python3 "$R/lib/park_and_rebase.py" park --repo <repo> --base {base}\n'
         "  # On park rc 3: resolve, `git -C <repo> -c core.hooksPath=/dev/null rebase --continue`,\n"
         "  # then re-bind -- that is a separate shell, and an unbound R makes restore exit 2,\n"
         "  # which reads as its own 'refused, repo unchanged' while the park is still at HEAD:\n"
@@ -258,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", default=".")
     parser.add_argument("--base")
+    parser.add_argument("--no-fetch", action="store_true")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--files", nargs="+", metavar="PATH", help="check these paths instead of scanning the working tree")
     group.add_argument("--plan-files", action="store_true", help="derive --files from docs/plans/*.md under --repo")
@@ -266,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     plan_errors: list[str] = []
     try:
         base = args.base or default_base(args.repo)
-        fetch_base(args.repo, base)
+        if not args.no_fetch:
+            fetch_base(args.repo, base)
         override_files = files_from_plan_dir(args.repo, base, plan_errors) if args.plan_files else args.files
         if override_files is not None:
             advanced, overlap = analyze(args.repo, base, files=override_files)

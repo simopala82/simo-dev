@@ -250,7 +250,7 @@ Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task
 | `afk` | Unattended driver overlaying the canonical chain | "afk" / unattended request | same chain, gate-free |
 | `grill-me` | Interview to resolve open decisions (decisions mode) or produce an approved design spec (design mode) | Explicit request, or `task-intake` deep-dive | `plan-write` or back to `task-intake` |
 | `mr-review` | Read-only critical review of someone else's MR/PR | "review MR \<link\>" | none (standalone) |
-| `spawn-task` | Wraps background-session spawning with inferred title/prompt/tldr | "spawn this", or invoked internally by other skills | none (utility) |
+| `spawn-task` | Wraps background-session spawning with inferred title/prompt/background | "spawn this", or invoked internally by other skills | none (utility) |
 | `guide` | Flow conventions: the chain, gate rules, ticket marker, publish path | On demand — worktree policy and the other eager rules live in the installer's `CLAUDE.md` | none (reference doc) |
 | `onboard-repo` | Detects and scaffolds simo-dev's per-repo conventions (CLAUDE.md Agent skills section, issue tracker, domain docs) in a target repo | "onboard this repo" | none (utility) |
 | `model-strategy` | View/change which model backs `code_review`, `plan_critique`, `explore_research`, `plan_execute` dispatch | "model strategy" | none (utility) |

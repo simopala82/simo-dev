@@ -27,6 +27,8 @@ def test_decide_advanced_overlap_stops():
     assert rc == 1
     assert "lib/a.py" in msg and "lib/b.py" in msg
     assert "rebase" in msg.lower()
+    rc, msg = cbf.decide(True, ["lib/a.py"], "feat/parent")
+    assert "park --repo <repo> --base feat/parent" in msg
 
 
 def test_main_safe(monkeypatch):
@@ -73,6 +75,16 @@ def test_main_base_override_skips_default(monkeypatch):
     monkeypatch.setattr(cbf, "analyze", lambda repo, base: (False, []))
     assert cbf.main(["--repo", "/x", "--base", "develop"]) == 0
     assert called["default"] is False
+
+
+def test_main_no_fetch_skips_fetch(monkeypatch):
+    fetched = []
+    monkeypatch.setattr(cbf, "fetch_base", lambda repo, base: fetched.append(base))
+    monkeypatch.setattr(cbf, "analyze", lambda repo, base: (False, []))
+    assert cbf.main(["--repo", "/x", "--base", "develop", "--no-fetch"]) == 0
+    assert fetched == []
+    assert cbf.main(["--repo", "/x", "--base", "develop"]) == 0
+    assert fetched == ["develop"]
 
 
 # --- integration tests for analyze() against real git repos ---

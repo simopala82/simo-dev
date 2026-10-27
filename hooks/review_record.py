@@ -8,6 +8,17 @@ SubagentStop (not PostToolUse:Skill or PostToolUse:Agent) is the right trigger, 
 the `REPO:` marker must be line 1 of the transcript's FIRST user message (security
 boundary, not a formatting rule — see lib/agent_marker.py).
 
+The foreground process only checks the payload and hands a slim copy to a detached
+`review_record.py --worker <json>`, which runs every gate and records. On CLI 2.1.308 the
+hook starts before the closing SubagentHandback entry is on disk, so a single read found no
+handback: 12 of 40 handback conclusions went unrecorded (2026-10-24 16:05Z to 2026-10-25
+10:38Z) while every missed transcript passed all the gates once written. The worker re-reads
+for up to HANDBACK_WAIT_SECONDS (_handback_lands). Detaching came first, on a suspicion that
+the CLI kills the hook at stream teardown; a probe (2026-10-26) saw no kill, but the detach
+stays as cheap insurance. The record epoch trails the conclusion by the worker's whole run:
+start, the handback wait, the marker subprocess, git and review_marker
+(~/.claude/reference/claude-code-hooks.md).
+
 Windows-compat port of review-record.sh (OSS migration step 7b) — behavior was identical
 at the port; the SubagentHandback completion check was added after it. PEP 723 +
 stdlib-only per the skill_logger.py precedent.
@@ -18,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -31,6 +43,9 @@ def _plugin_enabled() -> bool:
 
 
 HANDBACK_TOOL = "SubagentHandback"
+WORKER_FLAG = "--worker"
+HANDBACK_WAIT_SECONDS = 2.0
+_HANDBACK_POLL_SECONDS = 0.05
 
 
 def _handback_concluded(transcript: str) -> bool:
@@ -113,29 +128,53 @@ def _tool_result_ids(entry: dict) -> set | None:
     return ids
 
 
-def main() -> int:
+def _cheap_gates(payload: dict) -> tuple[str, str] | None:
+    """(session, transcript) when the payload is a reviewer stop worth recording, else None.
+    No subprocess and no transcript read: the foreground process must exit fast."""
+    if (payload.get("agent_type") or "") not in ("simo-dev:code-reviewer", "code-reviewer"):
+        return None
+    session = payload.get("session_id") or ""
+    transcript = payload.get("agent_transcript_path") or ""
+    if not session or not transcript:
+        return None
+    return session, transcript
+
+
+def _handback_lands(transcript: str) -> bool:
+    """_handback_concluded, re-read until it holds or HANDBACK_WAIT_SECONDS pass.
+
+    CLI 2.1.308 fires SubagentStop before the closing SubagentHandback entry is on disk: a
+    probe (2026-10-26, 6 of 6 handback-only stops) saw the transcript end at the final
+    api-request lines when the hook started, and the handback land 0-50 ms later. An
+    interrupted subagent never gains one, so waiting costs it the window and records nothing.
+
+    A True read must hold one poll later: a response whose handback is followed by a parallel
+    tool_use is written one entry at a time, and a read between the two would see the
+    handback last. A single early read rarely hit that gap; repeated reads would. It covers
+    only entries queued together: an interrupt while the parallel block is still streaming
+    may never write it, and the handback then stays last (as it did with a single read)."""
+    deadline = time.monotonic() + HANDBACK_WAIT_SECONDS
+    while True:
+        if _handback_concluded(transcript):
+            time.sleep(_HANDBACK_POLL_SECONDS)
+            if _handback_concluded(transcript):
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_HANDBACK_POLL_SECONDS)
+
+
+def _record(payload: dict) -> int:
     if not _plugin_enabled():
         return 0
-
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, AttributeError, TypeError):
+    gated = _cheap_gates(payload)
+    if gated is None:
         return 0
-
-    if (payload.get("agent_type") or "") not in ("simo-dev:code-reviewer", "code-reviewer"):
-        return 0
-
-    session = payload.get("session_id") or ""
-    if not session:
-        return 0
-
-    transcript = payload.get("agent_transcript_path") or ""
-    if not transcript:
-        return 0
+    session, transcript = gated
 
     # SubagentStop also fires for an INTERRUPTED subagent -- neither verdict text nor a
     # closing handback means no verdict was reached, so recording would be false coverage.
-    if not (payload.get("last_assistant_message") or "") and not _handback_concluded(transcript):
+    if not (payload.get("last_assistant_message") or "") and not _handback_lands(transcript):
         return 0
 
     lib = Path(__file__).resolve().parent.parent / "lib"
@@ -168,5 +207,55 @@ def main() -> int:
     return 0
 
 
+def _detach(payload: dict, session: str, transcript: str) -> None:
+    """Hand the record path to a worker in its own session and do not wait for it.
+
+    2.1.308 binds SubagentStop hooks to the agent's abort signal and can kill one still
+    running at stream teardown; a probe never saw it happen, so this is insurance. The
+    record path is slow enough to be worth insuring: it waits for the handback and spawns
+    several processes (two Python scripts and git, which review_marker's repo_id runs
+    again). The payload travels in argv, so the spawn is one atomic step with no pipe left
+    half-written by a kill; it is slimmed because only the presence of the verdict text
+    matters."""
+    slim = {"agent_type": payload.get("agent_type"), "session_id": session,
+            "agent_transcript_path": transcript,
+            "last_assistant_message": "1" if payload.get("last_assistant_message") else ""}
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), WORKER_FLAG, json.dumps(slim)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def _load(text: str) -> dict | None:
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def main(argv: list[str]) -> int:
+    # The plugin check reads settings.json, so it runs in the worker (_record): every
+    # millisecond before the Popen is a window in which a kill loses the record.
+    if len(argv) == 3 and argv[1] == WORKER_FLAG:
+        payload = _load(argv[2])
+        return _record(payload) if payload is not None else 0
+
+    try:
+        payload = _load(sys.stdin.read())
+    except (AttributeError, UnicodeError):
+        return 0
+    if payload is None:
+        return 0
+    gated = _cheap_gates(payload)
+    if gated is not None:
+        _detach(payload, *gated)
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

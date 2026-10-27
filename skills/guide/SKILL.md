@@ -45,6 +45,8 @@ Personal repos with no linked tracker project drop a `.claude/no-tracker` marker
 
 Worktree cleanup after merge is handled by `simo-dev:mr-followup` step 8, automatically — the one pre-approved exception to "destructive ops need approval" (runs ONLY after a user-approved merge). Never switch/checkout the main checkout to do it — removal works from any branch, and another session may be working there.
 
+Once cleanup, the journal and step 8.6 are done, step 8.7 invokes the repo's configured `release_skill` with args `post-merge`; an unconfigured repo is a silent no-op. Configure it in `~/.claude/simo-dev/repo.json` via `lib/repo_config.py`, keyed by repo-id — `docs/canonical-flow.md` "Configuring per-repo settings".
+
 ## MR assignee
 
 Always assign GitLab MRs to the current user: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; glab api user | python3 "$R/lib/json_field.py" - username`, pass `--assignee <username>`. Never hardcode.

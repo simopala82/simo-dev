@@ -2,7 +2,8 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""pytest port of hooks/test_base_freshness_warn.sh — same 5 cases."""
+"""pytest port of hooks/test_base_freshness_warn.sh (its 5 cases), plus the desktop-app
+tree layout (.claude/worktrees/<name>, recognised only with its marker file)."""
 import json
 import os
 import subprocess
@@ -12,14 +13,15 @@ from pathlib import Path
 HOOK = Path(__file__).resolve().parent.parent / "base_freshness_warn.py"
 
 
-def _mkworktree(tmp_path, advance, declare_plan):
-    """advance: "none"|"overlap"|"disjoint". Bare origin + a worktree-shaped clone
-    (parent dir literally named .worktrees, since the hook's scoping check keys off
-    that name)."""
+def _mkworktree(tmp_path, advance, declare_plan, layout="canonical"):
+    """advance: "none"|"overlap"|"disjoint". layout: "canonical" (real/.worktrees/feat-x)
+    | "desktop" (real/.claude/worktrees/brave-x plus the desktop-app marker in its git
+    dir) | "desktop-unmarked" (same path, no marker). Bare origin + a worktree-shaped
+    clone, since the hook's scoping check keys off the layout."""
     root = tmp_path / "root"
     up = root / "up.git"
     real = root / "real"
-    wt = real / ".worktrees" / "feat-x"
+    wt = real / ".worktrees" / "feat-x" if layout == "canonical" else real / ".claude" / "worktrees" / "brave-x"
     subprocess.run(["git", "init", "-q", "--bare", str(up)], check=True)
     subprocess.run(["git", "init", "-q", "-b", "master", str(real)], check=True)
     subprocess.run(["git", "-C", str(real), "config", "user.email", "t@t"], check=True)
@@ -31,9 +33,13 @@ def _mkworktree(tmp_path, advance, declare_plan):
     subprocess.run(["git", "-C", str(real), "push", "-q", "origin", "master"], check=True)
     subprocess.run(["git", "-C", str(real), "symbolic-ref", "refs/remotes/origin/HEAD",
                     "refs/remotes/origin/master"], check=True)
-    (real / ".worktrees").mkdir(parents=True, exist_ok=True)
+    wt.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "-C", str(real), "worktree", "add", "-q", "-b", "feat-x",
                     str(wt), "master"], check=True, capture_output=True)
+    if layout == "desktop":
+        gitdir = subprocess.run(["git", "-C", str(wt), "rev-parse", "--absolute-git-dir"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        (Path(gitdir) / "claude-desktop-worktree").write_text("")
     if declare_plan:
         (wt / "docs" / "plans").mkdir(parents=True, exist_ok=True)
         (wt / "docs" / "plans" / "p.md").write_text("- Create: `shared.py`\n")
@@ -82,9 +88,41 @@ def test_docs_plans_write_skipped_but_does_not_consume_the_arm(tmp_path):
     assert _warns(wt / "x.py", state)   # the real first write still warns
 
 
+def test_marked_desktop_tree_warns(tmp_path):
+    wt = _mkworktree(tmp_path, "overlap", True, layout="desktop")
+    state = tmp_path / "state" / "base-freshness-hook"
+    assert _warns(wt / "x.py", state)
+
+
+def test_unmarked_claude_worktrees_tree_never_warns(tmp_path):
+    wt = _mkworktree(tmp_path, "overlap", True, layout="desktop-unmarked")
+    state = tmp_path / "state" / "base-freshness-hook"
+    assert not _warns(wt / "x.py", state)
+
+
 def test_main_checkout_write_never_warns(tmp_path):
     main_repo = tmp_path / "main"
     main_repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "master", str(main_repo)], check=True)
     state = tmp_path / "state" / "base-freshness-hook"
     assert not _warns(main_repo / "x.py", state)
+
+
+def test_stacked_branch_checks_its_parent_not_the_default(tmp_path):
+    """feat-x is stacked on a pushed parent; master advanced on the declared file after the
+    parent forked. Against the parent nothing advanced, so no warning."""
+    wt = _mkworktree(tmp_path, "none", True)
+    real = wt.parent.parent
+    (wt / "parent.py").write_text("p\n")
+    subprocess.run(["git", "-C", str(wt), "add", "parent.py"], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-qm", "parent"], check=True)
+    subprocess.run(["git", "-C", str(wt), "push", "-q", "origin", "HEAD:parent"], check=True)
+    (wt / "own.py").write_text("own\n")   # a commit of feat-x's own: a real stack, not a snapshot
+    subprocess.run(["git", "-C", str(wt), "add", "own.py"], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-qm", "own"], check=True)
+    (real / "shared.py").write_text("advanced\n")
+    subprocess.run(["git", "-C", str(real), "commit", "-qam", "advance"], check=True)
+    subprocess.run(["git", "-C", str(real), "push", "-q", "origin", "master"], check=True)
+    subprocess.run(["git", "-C", str(wt), "fetch", "-q", "origin"], check=True)
+    state = tmp_path / "state" / "base-freshness-hook"
+    assert not _warns(wt / "x.py", state)

@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Use after implementation, before commit. Iteratively requests code review via the simo-dev:code-reviewer subagent, auto-applies fixes for medium/high/critical findings (plus `low` on diff files, per canonical-flow "In-scope improvements"), re-reviews until clean (cap 5; pass `cap=2` when the diff is prose only — no code and no shell/python inside the prose), then presents the aggregated diff. Clean ship-flow runs cascade straight into simo-dev:commit; standalone or headless runs stop at the report. Third step of the canonical task flow.
+description: Use after implementation, before commit. Iteratively requests code review via the simo-dev:code-reviewer subagent, auto-applies fixes for medium/high/critical findings (plus `low` on diff files, per canonical-flow "In-scope improvements"), re-reviews until clean (cap 5; pass `cap=2` when the diff is prose only — no code and no shell/python inside the prose; optional `--target <branch>` overrides the base, else the stacked parent or `origin/HEAD` as in simo-dev:commit), then presents the aggregated diff. Clean ship-flow runs cascade straight into simo-dev:commit; standalone or headless runs stop at the report. Third step of the canonical task flow.
 ---
 
 # Dev Review Loop
@@ -52,13 +52,15 @@ Announce `Tests performed: <script's stdout line>`. An explicit `skip` at 0c pos
 
 ### 1. Empty-diff guard
 
-Diff vs the merge base. Empty **and** `git status --porcelain --untracked-files=all` also empty → nothing changed → "Nothing to review — diff is empty." and stop. Empty **but** the status is non-empty → most commonly no commits yet on this branch, but any range that nets to no change (e.g. a no-op commit) hits the same guard — not a real empty diff, proceed to step 2: its dispatch, via `code-review-protocol` step 1, applies that step's working-tree fallback (gated on the same range-diff-empty test, not on SHA equality).
+Diff vs the merge base with the base resolved by step 2's block (stacked parent when there is one, else the default branch): run that block's lines up to `echo "REVIEW BASE: $BASE"` first. Empty **and** `git status --porcelain --untracked-files=all` also empty → nothing changed → "Nothing to review — diff is empty." and stop. Empty **but** the status is non-empty → most commonly no commits yet on this branch, but any range that nets to no change (e.g. a no-op commit) hits the same guard — not a real empty diff, proceed to step 2: its dispatch, via `code-review-protocol` step 1, applies that step's working-tree fallback (gated on the same range-diff-empty test, not on SHA equality).
 
 ### 1.5. Iteration cap
 
 `CAP` = **5** unless the invoker passed a lower value (`cap=<n>`). 5 is the ceiling and **2 is the floor** — a passed value may only lower it
 within that range. Below 2 `simo-dev:mr-followup` would run no fix round at all, so the value stops meaning anything (the other one would surface immediately), so a passed 1 or 0 is
 clamped up to 2 — never rejected into the default of 5, which would silently cost more than asked.
+The invoker may also pass `--target <branch>` (optional): it overrides step 2's base detection
+(stacked parent, else `origin/HEAD`), exactly as `simo-dev:commit`'s own `--target` does.
 
 Pass `cap=2` when the diff is prose and nothing else: no code, and no executable content inside the
 prose either. Do not infer it from which file changed: the bodies this flow edits most are dense
@@ -79,10 +81,13 @@ before the cap-reached branch. Announce the value in one line so the report is a
 ### 2. Run review (iteration N, starting at 1)
 
 ```bash
-BASE=$(git -C "<worktree-abs>" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+git -C "<worktree-abs>" fetch origin --prune --quiet
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+TARGET_ARG="<the --target skill arg, or empty>"
+BASE=$(python3 "$R/lib/build_mr_ctx.py" --repo "<worktree-abs>" --target "$TARGET_ARG" --print-target) || { echo "STOP: could not resolve the base branch (stderr above)."; exit 1; }
 if [ -z "$BASE" ]; then
-  # origin/HEAD is not set on every clone (`git fetch` does not set it) — same
-  # fallback lib/check_base_freshness.py's default_base() already uses.
+  # origin/HEAD unset: --print-target prints an empty line; same fallback as
+  # lib/check_base_freshness.py's default_base().
   for cand in main master; do
     if git -C "<worktree-abs>" rev-parse --verify --quiet "origin/$cand" >/dev/null 2>&1; then
       BASE="$cand"
@@ -90,15 +95,16 @@ if [ -z "$BASE" ]; then
     fi
   done
 fi
-[ -n "$BASE" ] || { echo "STOP: cannot determine default base (origin/HEAD unset, no origin/main|master)"; exit 1; }
-git -C "<worktree-abs>" fetch origin "$BASE" --quiet
+[ -n "$BASE" ] || { echo "STOP: cannot determine base (origin/HEAD unset, no origin/main|master)"; exit 1; }
+echo "REVIEW BASE: $BASE"
 BASE_SHA=$(git -C "<worktree-abs>" merge-base HEAD "origin/$BASE")
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
 DIFF=$(python3 "$R/lib/diff_capture.py" "<worktree-abs>" --include-untracked -- "$BASE_SHA")
 DIFF_RC=$?
 printf 'rc=%s\nBASE_SHA=%s\n%s\n' "$DIFF_RC" "$BASE_SHA" "$DIFF"
 [ $DIFF_RC -eq 0 ] || { echo "STOP: diff capture failed (rc $DIFF_RC) — do not dispatch the reviewer on a partial/empty diff."; exit 1; }
 ```
+
+The base is the one `simo-dev:commit` targets (`--target` → stacked parent → `origin/HEAD`), so a stacked branch is reviewed against its parent, without the parent's commits in the diff. Not detected, with no `note:`: a branch with no commits of its own yet (all work in the working tree) whose parent advanced on the remote after the cut — the base silently falls back to the default branch and the parent's commits are in the diff; pass `--target <parent>` there. A `note:` on stderr (a diverged stacked candidate) is relayed in one line, not asked about here — `simo-dev:commit` step 0.5 asks. A `STOP:` (rc 2/3) → ask the user which branch this one targets and re-run with `--target <branch>`; under `simo-dev:afk` stop and record it, never guess.
 
 The printed `BASE_SHA=` value is the literal step 5's branch-point check uses.
 
@@ -159,8 +165,10 @@ After applying every passing fix for the round, run the plan-drift check on the 
 
 ```bash
 R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/check_plan_drift.py" --repo "<worktree-abs>" --changed-file <file1> <file2> ...
+python3 "$R/lib/check_plan_drift.py" --repo "<worktree-abs>" --base "<BASE>" --changed-file <file1> <file2> ...
 ```
+
+`<BASE>` = the `REVIEW BASE:` literal step 2 printed: a stacked parent's plan is not in `origin/<default>`, so the default base would flag it as live.
 
 `<file1> <file2> ...` = every unique file path from this round's **applied-fix** log entries only (never the `escalated-during-fix:` entries this same step can also log — that file was never written, so it has nothing to check), in the same repo-root-relative form `git -C "<worktree-abs>" diff --name-only` prints (the same form a plan's `**Files:**` bullet declares) — the fix log's own `[severity] file:line` entries are observed to carry paths in that form in this plugin's existing diff-derived findings, just strip the trailing `:line`. Never a `lib/`-relative shorthand or an absolute path: `plans_mentioning()` does an exact string match against the plan's declared paths, so a differently-rooted path silently matches nothing (skip the call entirely when the round applied zero fixes — nothing changed to check). rc 0 → nothing to do. rc 1 → for each `<plan> mentions <file>` line printed, read that plan around the embedded target for `<file>` and, if the embedded code/text still shows the pre-fix version, resync it with a targeted `Edit` before continuing to step 7 — not a full plan-write regeneration, and never a reason to abort the round: a false positive (the plan cites the file but the reviewed passage is unaffected) costs a few seconds of reading, nothing to fix. rc 2 → note the error in the fix log and continue; a script failure never blocks the round.
 
@@ -184,7 +192,7 @@ DIFF_CAPTURE_RC=$?
 Show, in order: (1) summary line (iterations, fixed by severity, unresolved); (2) fix log; (3) rejected findings with rationale; (4) unresolved findings by severity (critical always shown); (5) the script's output above (full diff if small, `--stat` + slices + temp-file path if large — same threshold, no special case for this report versus any other call site); this is the full working-tree-vs-HEAD diff — implementation plus any fixes applied during this loop combined (`review-loop` never commits, per this file's own Notes, so nothing here is committed separately) — not only the incremental per-iteration fixes in isolation; (6) `low` findings NOT applied (last iteration, deferred, rejected — decided at step 4, not here); (7) Also fixed — the lines this loop added to the ledger; (8) on its own labelled line, any `low` whose branch-point check was `error` (applied, not ledgered).
 
 Then decide:
-- Clean, ship-flow invocation (proactive trigger) → announce "Review loop clean → `simo-dev:commit`" and invoke `simo-dev:commit` directly (the merge remains the one hard gate downstream). Three cases stop at the report instead:
+- Clean, ship-flow invocation (proactive trigger) → announce "Review loop clean → `simo-dev:commit`" and invoke `simo-dev:commit` directly (the merge remains the one hard gate downstream), passing `--target <branch>` when review-loop itself received one, so commit does not re-detect a different base. Three cases stop at the report instead:
   - standalone review request (the user asked for a review only, e.g. "do a review") — report and stop;
   - headless / non-interactive run (an unattended headless caller, `claude -p`) — apply fixes only; commit/push/MR belong to the caller;
   - invoked as `simo-dev:commit` step-1 pre-flight — return to the calling commit flow, never re-invoke it (recursion).
