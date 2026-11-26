@@ -10,7 +10,7 @@
       "description": "Personal end-to-end dev flow: intake, review-loop, commit, MR follow-up.",
       "source": {
         "source": "url",
-        "url": "git@github.com:simopala82/simo-dev.git",
+        "url": "https://github.com/simopala82/simo-dev.git",
         "ref": "master"
       }
     }

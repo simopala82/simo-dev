@@ -3,9 +3,9 @@
 ## Proposing changes to a skill
 
 Changes are proposed as a branch + merge request against this GitLab repository. A
-standalone mirror also exists at `github.com/simopala82/simo-dev` (currently private),
-but that mirror is a one-way, regenerated export — its history is rebuilt from scratch
-on every publish, so it never accepts contributions directly. This GitLab monorepo stays
+standalone public mirror also exists at `github.com/simopala82/simo-dev`, but that
+mirror is a one-way export — its content is regenerated from this repo on every publish,
+so it never accepts contributions directly. This GitLab monorepo stays
 the only place to propose changes. Keep one skill or concern per MR.
 
 Skill sources live under `skills/<name>/SKILL.md`. Note: those files are currently
@@ -66,9 +66,8 @@ this way — there are no bash hook self-tests left to run separately, and the
 There is no CI configured for this plugin yet. It still lives as a subtree of a
 private company GitLab repository, and a GitLab pipeline there would need to be
 scoped to the whole monorepo rather than just this plugin. A standalone mirror
-exists at `github.com/simopala82/simo-dev`, but it is currently private and
-regenerated wholesale on every publish (see "Proposing changes" above) rather than
-a live target for CI. This will be revisited once that mirror is public.
+exists at `github.com/simopala82/simo-dev`, but it is regenerated on every publish
+(see "Proposing changes" above) rather than a live target for CI.
 
 ## Code of Conduct
 

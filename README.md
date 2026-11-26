@@ -6,20 +6,42 @@ This README is the entry point — what the plugin does and how its skills chain
 
 ## Installation
 
-### Easiest: ask Claude Code to do it
+### Install from GitHub
 
-The simplest install path is to just ask Claude Code itself: open a session (in any repo)
-and ask it to install this plugin from `github.com/simopala82/simo-dev`. Claude will run the
-`/plugin marketplace add` and `/plugin install` commands from "Install from GitHub" below for
-you, and can also confirm the marketplace registered and the plugin loaded correctly.
+The plugin is published at [`github.com/simopala82/simo-dev`](https://github.com/simopala82/simo-dev).
+The repo is its own marketplace, so two commands in a Claude Code session are enough:
+
+```
+/plugin marketplace add simopala82/simo-dev
+/plugin install simo-dev@simo-dev-marketplace
+```
+
+Then restart Claude Code (or run `/reload-plugins`) so the skills load, and check that
+`/plugin` lists `simo-dev`. Optional next steps:
+
+- `/simo-dev:model-strategy` — pick which model backs each of the plugin's subagents.
+- `/simo-dev:onboard-repo` — run it in a session opened in the target repo's own folder: it
+  sets up that repo's conventions (CLAUDE.md "Agent skills" section, issue tracker, domain docs).
+
+To get a new version later, refresh the marketplace, update the plugin, then restart Claude Code:
+
+```
+claude plugin marketplace update simo-dev-marketplace
+claude plugin update simo-dev@simo-dev-marketplace
+```
+
+Releases and their notes: [GitHub Releases](https://github.com/simopala82/simo-dev/releases).
+
+### Or ask Claude Code to do it
+
+Open a session (in any repo) and ask Claude Code to install this plugin from
+`github.com/simopala82/simo-dev`. It runs the commands above for you and can confirm the
+marketplace registered and the plugin loaded.
 
 For example:
 
 > Install the plugin https://github.com/simopala82/simo-dev and set it up with
 > `/simo-dev:model-strategy`.
-
-Run `/simo-dev:onboard-repo` from a Claude Code session opened in the target repo's own
-folder — it configures that repo's conventions, not the plugin itself.
 
 ### Prerequisites
 
@@ -29,9 +51,8 @@ folder — it configures that repo's conventions, not the plugin itself.
   native installer (no Node.js required):
   - Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`
   - macOS / Linux: `curl -fsSL https://claude.ai/install.sh | bash`
-- **git**, reachable from the same shell — needed to clone the marketplace source below.
-- **An SSH key added to your GitHub account** — the mirror repo is currently private and its
-  marketplace manifest clones it over SSH.
+- **git**, reachable from the same shell — needed to clone the marketplace source. The repo is
+  public and cloned over HTTPS, so no GitHub account or SSH key is needed.
 
 Once installed, the skills themselves need:
 
@@ -104,18 +125,6 @@ directly below. Also not bundled: an `Explore` subagent definition (`~/.claude/a
    `CLAUDE.md` too, but they aren't part of this checklist — set them to your own values, there's
    nothing to copy from the plugin.
 6. For everything else, see [`docs/canonical-flow.md`](docs/canonical-flow.md).
-
-### Install from GitHub
-
-A standalone mirror of this plugin lives at `github.com/simopala82/simo-dev`. It is currently
-private, so this only works for GitHub accounts with access to it (currently just the author —
-update this note once/if the mirror is made public). The mirror self-hosts its own marketplace
-manifest, so no local workaround is needed:
-
-```
-/plugin marketplace add simopala82/simo-dev
-/plugin install simo-dev@simo-dev-marketplace
-```
 
 ## Plugin layout
 

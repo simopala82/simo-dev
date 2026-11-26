@@ -1,4 +1,4 @@
-## 1.17.1 (2026-11-26)
+## 1.17.2 (2026-11-26)
 
-### Bug Fixes
-- fix(simo-dev): generic repo names in public files, scrub internal product names
+### Other Changes
+- docs(simo-dev): install instructions for the public GitHub mirror
