@@ -246,12 +246,12 @@ def decide(advanced: bool, overlap: list[str], base: str = "<base>") -> tuple[in
         "Rebase onto the fresh base before committing. A bare `git rebase` needs a clear tree, "
         "so park the pending work first (then restore it) -- see the `simo-dev` commit skill, "
         "step 0.5:\n"
-        '  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"\n'
+        '  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"\n'
         f'  python3 "$R/lib/park_and_rebase.py" park --repo <repo> --base {base}\n'
         "  # On park rc 3: resolve, `git -C <repo> -c core.hooksPath=/dev/null rebase --continue`,\n"
         "  # then re-bind -- that is a separate shell, and an unbound R makes restore exit 2,\n"
         "  # which reads as its own 'refused, repo unchanged' while the park is still at HEAD:\n"
-        '  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"\n'
+        '  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"\n'
         '  python3 "$R/lib/park_and_rebase.py" restore --repo <repo>',
     )
 

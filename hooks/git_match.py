@@ -84,6 +84,21 @@ def git_subcommand_re_multiline(subcommand: str) -> re.Pattern[str]:
     return re.compile(_pattern(_SEP_ML, subcommand))
 
 
+def forge_merge_re() -> re.Pattern[str]:
+    """`glab mr merge` / `gh pr merge`, or a `glab api` call on the GitLab merge endpoint
+    (`.../merge_requests/<iid>/merge`, quoted or not, method not checked; an auto-merge arming
+    PUT matches too), as a command, multi-line (`\\`-newline continuations included). Match-or-not
+    only, like `git_subcommand_re_multiline`. Not seen (observed, not a closed list): a merge
+    inside a script file, after `do`/`then`/`{`, behind an env assignment or a wrapper
+    (`timeout`), with a global flag before `mr` (`glab -R g/p mr merge`), or the endpoint path
+    built from a variable. Seen though not a merge: a `glab api` call on another endpoint whose
+    quoted argument holds a merge-endpoint path (`-f body='see merge_requests/3/merge'`)."""
+    return re.compile(
+        _SEP_ML + r"(?:rtk\s+)?(?:(?:glab\s+mr|gh\s+pr)\s+merge(?:[\s&;|(]|$)"
+        r"|glab\s+api\s(?:[^\n;&|]|\\\n)*?merge_requests/[^/\s'\"]+/merge(?![\w/-]))"
+    )
+
+
 # `<<` that is neither part of `<<<` (here-string) nor glued to a word/`)` (arithmetic
 # `x<<y`), then an optional `-`, then a quoted word or a bare word (`END-X`, `EOF.x`;
 # the leading letter keeps a spaced numeric shift `<< 2` from reading as an opener).

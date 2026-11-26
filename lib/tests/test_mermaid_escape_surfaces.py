@@ -41,7 +41,7 @@ shape, green. Assertion 3 catches the two specific claims that actually caused
 trouble, not the general shape.
 
 Nor is `SURFACES` every place the rule is stated. `CONTEXT.md`'s glossary and the
-`--normalize-presentation` parentheticals in `skills/commit/SKILL.md` and
+`--normalize-presentation` parentheticals in `lib/mr_create.py`'s docstring (commit's) and
 `skills/mr-review/SKILL.md` are out because they describe what the normalizer does,
 or define a term — they do not tell an author how to write a label. NOT because
 they go unread by a model: this repo's own glossary calls a rendered `SKILL.md` a

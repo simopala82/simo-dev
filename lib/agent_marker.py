@@ -56,10 +56,12 @@ def _text(content: object) -> str:
 
 def repo_from_transcript(path: str) -> str | None:
     try:
-        raw = Path(path).read_text(errors="replace")
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    for line in raw.splitlines():
+    # split("\n"), never splitlines(): the CLI leaves NEL, U+2028 and U+2029 raw inside JSON
+    # strings, and a first message broken there would be skipped, making a resume line 1 here.
+    for line in raw.split("\n"):
         if not line.strip():
             continue
         try:
@@ -72,7 +74,9 @@ def repo_from_transcript(path: str) -> str | None:
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         body = _text(message.get("content"))
-        first = body.splitlines()[0] if body else ""
+        # Only "\n" ends line 1 here too. A trailing CR/VT/FF stays in the path, and the hook's
+        # .strip() removes it, so it records as before; only a separator inside the path fails closed.
+        first = body.split("\n")[0]
         m = MARKER.match(first)
         return m.group(1) if m else None
     return None

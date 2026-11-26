@@ -85,3 +85,14 @@ def test_dirty_desktop_tree_reports_marker_skip_and_dirt(main):
     result = run_cleanup(main, path, branch)
     assert path.exists()
     assert "desktop-app worktree" in result.stdout and "Uncommitted:" in result.stdout, result.stdout
+
+
+def test_main_checkout_resumed_in_place_is_kept(main):
+    branch = "feat/resumed"
+    git("switch", "-qc", branch, cwd=main)
+    git("push", "-q", "origin", branch, cwd=main)
+    result = run_cleanup(main, main, branch)
+    assert main.exists() and "is the main checkout" in result.stdout, result.stdout + result.stderr
+    assert subprocess.run(["git", "-C", str(main), "branch", "--show-current"],
+                          capture_output=True, text=True).stdout.strip() == branch
+    assert "skipped main refresh" in result.stdout

@@ -7,7 +7,7 @@ description: Use when reviewing someone else's GitLab MR or GitHub PR. Produces 
 
 Strictly read-only review of someone else's MR. Output is a local markdown file under `~/Documents/cr/` (override via `DEV_REVIEW_MR_OUT_DIR`).
 
-Every Bash block below that runs a plugin script re-binds `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` as its first line — shell state does not survive between Bash calls.
+Every Bash block below that runs a plugin script re-binds `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"` as its first line — shell state does not survive between Bash calls.
 
 ## Hard constraint — no remote writes
 
@@ -41,13 +41,13 @@ mkdir -p "$MRTMP"
 
 - **MR mode (GitLab):** `glab mr view "$REF" -F json > "$MRTMP/review_meta.json"` + `glab mr diff "$REF" --raw > "$MRTMP/review_diff.txt"`. Extract: `title`, `description`, `source_branch`, `target_branch`, `diff_refs.head_sha`, `web_url`, `author.username`, `iid`, project slug.
 - **MR mode (GitHub):** `gh pr view "$REF" --json title,body,headRefName,baseRefName,headRefOid,url,author > "$MRTMP/review_meta.json"` + `gh pr diff "$REF" > "$MRTMP/review_diff.txt"`.
-- **Branch-vs-default:** `git fetch origin "$DEFAULT_BRANCH"`; then `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/check_local_base_ahead.py" --repo "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH"; BASE_AHEAD_RC=$?; [ $BASE_AHEAD_RC -eq 0 ] || exit 1` — this bullet's spans are separate Bash calls (per this step's own preamble), so the `exit 1` stops only that call; the executing agent still must honor the result and not run the `git diff`/`printf` spans on non-zero, same as it already must for every other STOP in this skill (print the script's stdout/stderr; no bypass — ask before pushing the local base, never push it unasked; do not continue to `review_diff.txt` or step 4); rc 0 → `git diff "origin/$DEFAULT_BRANCH...HEAD" > "$MRTMP/review_diff.txt"`; build minimal meta locally: `printf '{"source_branch":"%s","target_branch":"%s","head_sha":"%s"}\n' "$(git rev-parse --abbrev-ref HEAD)" "$DEFAULT_BRANCH" "$(git rev-parse HEAD)" > "$MRTMP/review_meta.json"`.
+- **Branch-vs-default:** `git fetch origin "$DEFAULT_BRANCH"`; then `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; python3 "$R/lib/check_local_base_ahead.py" --repo "$(git rev-parse --show-toplevel)" --base "$DEFAULT_BRANCH"; BASE_AHEAD_RC=$?; [ $BASE_AHEAD_RC -eq 0 ] || exit 1` — this bullet's spans are separate Bash calls (per this step's own preamble), so the `exit 1` stops only that call; the executing agent still must honor the result and not run the `git diff`/`printf` spans on non-zero, same as it already must for every other STOP in this skill (print the script's stdout/stderr; no bypass — ask before pushing the local base, never push it unasked; do not continue to `review_diff.txt` or step 4); rc 0 → `git diff "origin/$DEFAULT_BRANCH...HEAD" > "$MRTMP/review_diff.txt"`; build minimal meta locally: `printf '{"source_branch":"%s","target_branch":"%s","head_sha":"%s"}\n' "$(git rev-parse --abbrev-ref HEAD)" "$DEFAULT_BRANCH" "$(git rev-parse HEAD)" > "$MRTMP/review_meta.json"`.
 
-MR mode (the two bullets above) is not subject to this guard — it diffs an externally-fetched MR/PR by its own remote head SHA, never local branch state; only branch-vs-default mode touches the local base ref `check_local_base_ahead.py` checks (same script as `mr-followup`'s step 6 guard).
+MR mode (the two bullets above) is not subject to this guard — it diffs an externally-fetched MR/PR by its own remote head SHA, never local branch state; only branch-vs-default mode touches the local base ref `check_local_base_ahead.py` checks (`mr-followup`'s step 6 runs the same check through `lib/mr_followup.py review-gate`).
 
 ### 3. Compute output path
 
-- `id_slug` = `mr-<iid>`; else ticket key from branch (`R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/derive_ticket_key.py" "<branch>" --cwd "$(git rev-parse --show-toplevel)"` — spelled out because an unbound `R` exits rc 2 with empty stdout, which falls through to the branch slug instead of surfacing); else `branch-<sanitized-branch>`.
+- `id_slug` = `mr-<iid>`; else ticket key from branch (`R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; python3 "$R/lib/derive_ticket_key.py" "<branch>" --cwd "$(git rev-parse --show-toplevel)"` — spelled out because an unbound `R` exits rc 2 with empty stdout, which falls through to the branch slug instead of surfacing); else `branch-<sanitized-branch>`.
 - `topic_slug` = sanitized MR title (or first commit subject): lowercase, `[^a-z0-9._-]`→`-`, collapse, trim 50 chars, aim 2-5 words.
 - Filename `<YYYY-MM-DD>-<id_slug>-<topic_slug>.md` (date from session `currentDate`, not shell). Path: `${DEV_REVIEW_MR_OUT_DIR:-~/Documents/cr}/<filename>`; auto-create dir; on collision append `-2`, `-3`, ….
 
@@ -57,7 +57,7 @@ Before fetching, make sure the ticket's prefix has a `scope_fetch_cmd` configure
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 SOURCE_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/review_meta.json" source_branch headRefName "")
 KEY=$(python3 "$R/lib/derive_ticket_key.py" "$SOURCE_BRANCH" --cwd "$(git rev-parse --show-toplevel)")
 if [ -n "$KEY" ]; then
@@ -71,7 +71,7 @@ An `ASK_SCOPE_FETCH_CMD prefix=<P> key=<K>` line means no `scope_fetch_cmd` is c
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/build_review_ctx.py" "$MRTMP/review_meta.json" --repo "$(git rev-parse --show-toplevel)" > "$MRTMP/review_ctx.json"
 python3 "$R/lib/mr_presentation.py" --mode review \
   --diff-file "$MRTMP/review_diff.txt" --context-file "$MRTMP/review_ctx.json" > "$MRTMP/review_request.json"
@@ -83,7 +83,7 @@ Read `$MRTMP/review_request.json` directly (Read tool) to get `prompt`, `schema`
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/review_pres.json"
 ```
 
@@ -91,7 +91,7 @@ python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/review_pres
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/mr_presentation.py" --assemble --mode review \
   --presentation-json "$MRTMP/review_pres.json" --context-file "$MRTMP/review_ctx.json" > "$MRTMP/review_body.md"
 ```
@@ -104,7 +104,7 @@ If `ticket_drift` is `true` (from `review_pres.json`) AND `jira_key` non-empty (
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 rm -f "$MRTMP/review_jira_full.txt"
 JIRA_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/review_ctx.json" jira_key "")
 DRIFT=$(python3 "$R/lib/json_field.py" "$MRTMP/review_pres.json" ticket_drift false)
@@ -119,7 +119,7 @@ An `ASK_SCOPE_FETCH_CMD` line here means the same ask-and-remember as step 4, fo
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 JIRA_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/review_ctx.json" jira_key "")
 DRIFT=$(python3 "$R/lib/json_field.py" "$MRTMP/review_pres.json" ticket_drift false)
 if [ "$DRIFT" = "true" ] && [ -n "$JIRA_KEY" ]; then
@@ -133,7 +133,7 @@ fi
 ### 5. Find critical-only findings
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 CODE_REVIEW_MODEL=$(python3 "$R/lib/model_strategy.py" get code_review)
 ```
 
@@ -153,7 +153,7 @@ Per finding: Read the cited `file:line_range`; decide if the issue still exists.
 
 ### 8. Write md file + report
 
-Frontmatter: `mr_iid`, `mr_url` (empty in branch-vs-default), `jira_key` (empty if none), `source_branch`, `target_branch`, `commit_sha`, `reviewed_at` (currentDate), `reviewer` (`R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; glab api user | python3 "$R/lib/json_field.py" - username`). Body: `$MRTMP/review_body.md` content (Read tool, never re-echoed through a shell variable), then the drift section when `review_jira_full.txt` is non-empty, then one block per finding, then the commit/verdict footer.
+Frontmatter: `mr_iid`, `mr_url` (empty in branch-vs-default), `jira_key` (empty if none), `source_branch`, `target_branch`, `commit_sha`, `reviewed_at` (currentDate), `reviewer` (`R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; glab api user | python3 "$R/lib/json_field.py" - username`). Body: `$MRTMP/review_body.md` content (Read tool, never re-echoed through a shell variable), then the drift section when `review_jira_full.txt` is non-empty, then one block per finding, then the commit/verdict footer.
 
 > Detail: `lib/output-templates.md` — load when writing the review md file (drift block, finding block format, Configuration).
 
@@ -161,7 +161,7 @@ Lint each non-resolved finding's mermaid before writing:
 
 ```bash
 MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")_$(git branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 printf '%s' "$PER_FINDING_MERMAID" > "$MRTMP/finding_mmd.txt"
 python3 "$R/lib/mr_presentation.py" --lint-mermaid \
   --mermaid-file "$MRTMP/finding_mmd.txt" --diagram-type "$PER_FINDING_DIAGRAM_TYPE"
@@ -169,6 +169,6 @@ python3 "$R/lib/mr_presentation.py" --lint-mermaid \
 
 Any output lines → append under the finding as `> ⚠ mermaid: <problem>` (warning-only, diagram still ships). 🟢 findings: skip the diagram. No findings at all → `No critical issues on commit <head_sha>.` + `**Merge verdict:** 🟢 clean`. Write to the step-3 path.
 
-**Diagram preview widget (in chat, informational).** When `mcp__visualize__show_widget` is not yet callable (listed only as deferred, or not listed at all), run `ToolSearch` `select:mcp__visualize__show_widget` once first, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available. If `mcp__visualize__show_widget` is available: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; MERMAID=$(python3 "$R/lib/json_field.py" "$MRTMP/review_pres.json" mermaid)`, read `~/.claude/local-marketplace/simo-dev/lib/preview_widget.html`, substitute the literal `__MERMAID__`, call `show_widget` (title `review_diagram_preview`). **Never call the visualize `read_me` tool** — see `simo-dev:commit` step "Mermaid preview (informational, no gate)". Same shared asset as a sibling private team-plugin skill's MR-description generator — keep byte-identical. Not available, or `show_widget` errors → skip (the md's fence renders it).
+**Diagram preview widget (in chat, informational).** When `mcp__visualize__show_widget` is not yet callable (listed only as deferred, or not listed at all), run `ToolSearch` `select:mcp__visualize__show_widget` once first, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available. If `mcp__visualize__show_widget` is available: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; MERMAID=$(python3 "$R/lib/json_field.py" "$MRTMP/review_pres.json" mermaid)`, read `~/.claude/local-marketplace/simo-dev/lib/preview_widget.html`, substitute the literal `__MERMAID__`, call `show_widget` (title `review_diagram_preview`). **Never call the visualize `read_me` tool** — see `simo-dev:commit` step "Mermaid preview (informational, no gate)". Same shared asset as a sibling private team-plugin skill's MR-description generator — keep byte-identical. Not available, or `show_widget` errors → skip (the md's fence renders it).
 
 Chat output: ONLY a one-liner, e.g. `3 findings — 🔴 blocker on #2 — ~/Documents/cr/2026-06-03-mr-932-topn-filter.md`. Never print the full review body to chat.

@@ -14,14 +14,14 @@ Never skip review because the change "is simple". Dispatch the reviewer with pre
    REPO="<absolute path of the repo under review>"   # the Bash cwd does NOT follow the worktree
    BASE_SHA=$(git -C "$REPO" rev-parse origin/develop)   # or the task's base commit
    HEAD_SHA=$(git -C "$REPO" rev-parse HEAD)
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
    CODE_REVIEW_MODEL=$(python3 "$R/lib/model_strategy.py" get code_review)
    ```
    Same path goes in the `REPO:` line of item 2. Resolving the range from the cwd while the marker names another repo hands the reviewer a range from repo A and files the record against repo B.
 
    **Range diff empty but the working tree is dirty — most commonly `HEAD_SHA == BASE_SHA` (no commits yet on this branch).** Not rare: `simo-dev:review-loop` is invoked by `simo-dev:plan-execute` right after implementation, before `simo-dev:commit`, so the branch can legitimately carry zero commits while the working tree has real changes. A no-op/empty commit ahead of `BASE_SHA` triggers the same thing without SHA equality, so gate on the diff itself, not the SHA comparison: `git -C "$REPO" diff --quiet "$BASE_SHA...$HEAD_SHA"` (exit 0 = empty) together with a non-empty `git -C "$REPO" status --porcelain --untracked-files=all` means the range is empty by construction while real changes exist — detect this right here, before dispatching, and fall back to the working tree instead of the range:
    ```bash
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
    python3 "$R/lib/diff_capture.py" "$REPO" --include-untracked -- HEAD
    DIFF_CAPTURE_RC=$?
    [ $DIFF_CAPTURE_RC -eq 0 ] || { echo "STOP: diff capture failed (rc $DIFF_CAPTURE_RC) — do not dispatch the reviewer on a partial/empty diff."; exit 1; }

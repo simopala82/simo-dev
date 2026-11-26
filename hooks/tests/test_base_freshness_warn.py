@@ -13,7 +13,13 @@ from pathlib import Path
 HOOK = Path(__file__).resolve().parent.parent / "base_freshness_warn.py"
 
 
-def _mkworktree(tmp_path, advance, declare_plan, layout="canonical"):
+def _mark_flow(wt):
+    gitdir = subprocess.run(["git", "-C", str(wt), "rev-parse", "--absolute-git-dir"],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    (Path(gitdir) / "simo-dev-flow-active").write_text("1\n")
+
+
+def _mkworktree(tmp_path, advance, declare_plan, layout="canonical", flow=True):
     """advance: "none"|"overlap"|"disjoint". layout: "canonical" (real/.worktrees/feat-x)
     | "desktop" (real/.claude/worktrees/brave-x plus the desktop-app marker in its git
     dir) | "desktop-unmarked" (same path, no marker). Bare origin + a worktree-shaped
@@ -36,6 +42,8 @@ def _mkworktree(tmp_path, advance, declare_plan, layout="canonical"):
     wt.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "-C", str(real), "worktree", "add", "-q", "-b", "feat-x",
                     str(wt), "master"], check=True, capture_output=True)
+    if flow:
+        _mark_flow(wt)
     if layout == "desktop":
         gitdir = subprocess.run(["git", "-C", str(wt), "rev-parse", "--absolute-git-dir"],
                                 check=True, capture_output=True, text=True).stdout.strip()
@@ -53,7 +61,8 @@ def _mkworktree(tmp_path, advance, declare_plan, layout="canonical"):
 
 
 def _warns(file_path, state_file):
-    env = {**os.environ, "BASE_FRESHNESS_HOOK_STATE_FILE": str(state_file)}
+    env = {**os.environ, "BASE_FRESHNESS_HOOK_STATE_FILE": str(state_file),
+           "SIMO_DEV_FLOW_ACTIVE_DIR": str(state_file.parent / "active")}
     result = subprocess.run(
         [sys.executable, str(HOOK)],
         input=json.dumps({"tool_input": {"file_path": str(file_path)}}),
@@ -126,3 +135,26 @@ def test_stacked_branch_checks_its_parent_not_the_default(tmp_path):
     subprocess.run(["git", "-C", str(wt), "fetch", "-q", "origin"], check=True)
     state = tmp_path / "state" / "base-freshness-hook"
     assert not _warns(wt / "x.py", state)
+
+
+def test_overlap_outside_the_flow_never_warns_and_keeps_the_arm(tmp_path):
+    wt = _mkworktree(tmp_path, "overlap", True, flow=False)
+    state = tmp_path / "state" / "base-freshness-hook"
+    assert not _warns(wt / "x.py", state)
+    _mark_flow(wt)
+    assert _warns(wt / "y.py", state)   # the inactive write did not consume the arm
+
+
+def test_session_flag_alone_activates_the_hook(tmp_path):
+    wt = _mkworktree(tmp_path, "overlap", True, flow=False)
+    state = tmp_path / "state" / "base-freshness-hook"
+    (state.parent / "active").mkdir(parents=True)
+    (state.parent / "active" / "sess-y").write_text("1\n")
+    env = {**os.environ, "BASE_FRESHNESS_HOOK_STATE_FILE": str(state),
+           "SIMO_DEV_FLOW_ACTIVE_DIR": str(state.parent / "active")}
+    result = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps({"session_id": "sess-y", "tool_input": {"file_path": str(wt / "x.py")}}),
+        text=True, env=env, capture_output=True,
+    )
+    assert "additionalContext" in result.stdout

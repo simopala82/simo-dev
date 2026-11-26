@@ -146,16 +146,19 @@ def test_skills_wire_the_check():
     review_loop = (skills / "review-loop" / "SKILL.md").read_text()
     mr_followup = (skills / "mr-followup" / "SKILL.md").read_text()
     assert "printf 'rc=%s\\nBASE_SHA=%s\\n%s\\n'" in review_loop
-    assert '/lib/branch_point_check.py" --repo "<worktree-abs>" --base-sha "<BASE_SHA>"' in review_loop
+    fixer_steps = (skills / "review-loop" / "lib" / "fixer-steps.md").read_text()
+    assert '/lib/branch_point_check.py" --repo "<worktree-abs>" --base-sha "<BASE_SHA>"' in fixer_steps
     assert 'git -C "<worktree-abs>" diff --quiet HEAD || {' in mr_followup
     assert 'every target is error"; exit 0; }' in mr_followup
     assert '/lib/branch_point_check.py" --repo "<worktree-abs>" --base-sha "$(git -C' in mr_followup
     plan_execute = (skills / "plan-execute" / "SKILL.md").read_text()
     assert '/lib/branch_point_check.py" --repo "<worktree-abs>" --base-sha "$(git -C "<worktree-abs>" merge-base HEAD "origin/<ledger-base>")"' in plan_execute
     assert "diff --quiet HEAD" not in plan_execute
-    assert 'echo "LEDGER_BASE=$LB"' in plan_execute
-    assert "`exempt`" in plan_execute
-    assert "`completes-branch`" in plan_execute
+    assert '/lib/plan_execute_preflight.py" "<plan-path>" --repo "<worktree-abs>" --base "<base>"' in plan_execute
+    assert "`LEDGER_BASE=` → `<ledger-base>`" in plan_execute
+    dispatch = (skills / "plan-execute" / "lib" / "agent-dispatch.md").read_text()
+    assert "`exempt`" in dispatch
+    assert "`completes-branch`" in dispatch
 
 
 def test_missing_file_is_error(tmp_path):

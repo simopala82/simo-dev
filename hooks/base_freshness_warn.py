@@ -10,6 +10,8 @@ past this task worktree's fork point on files the task's plan(s) declare. Fires 
 first write OUTSIDE docs/plans/** in a task worktree, then never again for that branch
 (armed-state file).
 
+Silent unless the simo-dev flow is active (lib/flow_state.py).
+
 Windows-compat port of base-freshness-warn.sh (OSS migration step 7b) — behavior
 intentionally identical; PEP 723 + stdlib-only per the skill_logger.py precedent.
 """
@@ -21,6 +23,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import flow_state  # noqa: E402
 
 
 def _plugin_enabled() -> bool:
@@ -83,6 +88,9 @@ def main() -> int:
     if not _is_task_worktree(toplevel):
         return 0
 
+    if not flow_state.is_active(payload.get("session_id") or "", toplevel):
+        return 0   # flow dormant: silent, and the per-branch arm stays unconsumed
+
     branch = _git("-C", toplevel, "branch", "--show-current")
     if not branch:
         return 0   # detached HEAD -- not an adopted task branch (yet)
@@ -137,7 +145,7 @@ def main() -> int:
 
     ctx = (f"REMINDER: origin base advanced since this task's worktree was created, "
            f"touching files its plan declares -- {out}. Re-verify the plan is still "
-           f"current before continuing (see simo-dev:plan-write's own Plan critique and review gate section).")
+           f"current before continuing (see simo-dev:task-intake step 7.5, the Plan review gate).")
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": ctx}}))
     return 0
 

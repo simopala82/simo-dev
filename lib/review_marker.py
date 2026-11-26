@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""Per-(repo+session) review record for the simo-dev review-loop reminder.
+"""Per-(work tree+session) review record for the simo-dev review-loop reminder.
 
 Answers one question: has a code review already covered the files this commit
 will include? The record is written from an observed harness event — the
@@ -14,11 +14,12 @@ dispatch. A final instruction step can be skipped too; all three made the old
 marker lie.
 
 State file: ~/.claude/state/review-loop (override: REVIEW_MARKER_STATE_FILE).
-Entry format: <repo-id>:<session-id>:<epoch>
-  Parsed via rsplit(':', 2). session-id has no ':', epoch numeric; repo-id may
-  contain ':' (remoteless fallback path). The epoch lives in the CONTENT, not the
+Entry format: <tree-id>:<session-id>:<epoch>
+  Parsed via rsplit(':', 2). session-id has no ':', epoch numeric; tree-id may
+  contain ':' (it is a path). The epoch lives in the CONTENT, not the
   file mtime, so touch/copy/rsync cannot forge a review.
-repo-id comes from lib/repo_identity.py — stable across worktrees of one repo.
+tree-id is the work tree's toplevel path, not the repo: see _tree_id. Entries written
+before that switch carry the repo-wide id (the normalized origin URL) and match nothing.
 Entries past PRUNE_AFTER_SECONDS are ignored on read and are cleared from disk only
 when compaction runs (see _compact_if_large), so below its threshold they stay in the
 file — housekeeping only either way, since the reader filters them. There is no
@@ -57,13 +58,11 @@ import sys
 import time
 from pathlib import Path
 
-# Single-source repo identity from the sibling helper. Inserting the script's own
-# dir makes `import repo_identity` resolve both when run as `python3
-# review_marker.py` and when loaded via importlib in tests.
+# Inserting the script's own dir makes `import skill_log` resolve both when run as
+# `python3 review_marker.py` and when loaded via importlib in tests.
 _LIB_DIR = str(Path(__file__).resolve().parent)
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
-from repo_identity import repo_id  # noqa: E402
 from skill_log import _fields as _skill_log_fields  # noqa: E402
 
 PRUNE_AFTER_SECONDS = 7 * 24 * 3600
@@ -76,6 +75,38 @@ _COMPACT_AT_LINES = 500
 
 def _now() -> float:
     return time.time()
+
+
+def _tree_id(repo: str) -> str:
+    """The work tree a record is filed under: `git rev-parse --show-toplevel` of `repo`.
+
+    Per work tree, because a review reads one tree: `simo-dev:review-loop` captures
+    `diff_capture.py "<worktree-abs>" --include-untracked -- "$BASE_SHA"`, the tree its
+    `REPO:` marker names. The repo-wide id used before (the normalized origin URL) is the
+    same for every worktree of a repo, so a review of a task worktree also vouched for the
+    main checkout and every sibling worktree, whose edits may predate it. Observed
+    2026-11-10: a main-checkout edit five days older than a worktree review passed
+    `simo-dev:commit` step 1 as reviewed.
+
+    A subdirectory or a symlinked spelling of the tree names the same tree, since git answers
+    with the physical toplevel (measured 2026-11-10, git 2.56.0). A path inside a nested
+    worktree or a submodule names that inner tree instead. A tree moved after its review
+    (`git worktree move`) gets a new id and loses the record: one more review, never false
+    coverage. No work tree (not a repo, a bare repo, a `.git` dir) exits rc 1 with the reason
+    on stderr, as `repo_identity.repo_id` did on a non-repo: no record is written and nothing
+    reads as covered. So does a toplevel holding a line break: the store is one entry per
+    line, split by _live_entries with splitlines(), so such a path would write a second
+    entry naming whatever follows the break.
+    """
+    try:
+        out = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
+                             capture_output=True, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        sys.exit(f"review_marker: {repo} is not inside a git work tree")
+    rid = out.decode("utf-8", "surrogateescape").removesuffix("\n")
+    if rid.splitlines() != [rid]:
+        sys.exit(f"review_marker: the work tree path of {repo} holds a line break, which the store cannot hold")
+    return rid
 
 
 def _state_file() -> Path:
@@ -183,7 +214,7 @@ def _live_entries(now: float) -> list[tuple[str, str, int]]:
 
 
 def _lookup(rid: str, session: str, now: float) -> int | None:
-    """Epoch of the newest record for this repo and session, or None.
+    """Epoch of the newest record for this work tree and session, or None.
 
     The match is always exact, on both keys. Every caller can supply the harness
     session id — the PreToolUse hook reads it from the payload, `simo-dev:commit`
@@ -199,7 +230,7 @@ def _needs_leading_newline(f: Path) -> bool:
     """True when the store's last line was left without its terminating newline.
 
     A write cut short mid-line leaves a tail that an append would splice onto, producing one
-    entry whose repo-id is the two lines concatenated — and _lookup would then miss the
+    entry whose tree-id is the two lines concatenated — and _lookup would then miss the
     session that just recorded, which is the exact failure this module exists to prevent.
     The whole-file rewrite this replaced discarded such a tail for free; an append has to
     repair it. A missing store has no tail to splice onto; an unreadable one may well have
@@ -285,7 +316,7 @@ def record(repo: str, session: str) -> int:
     rewrites, on the rare branch and with the loss documented there.
     """
     now = _now()
-    rid = repo_id(repo)
+    rid = _tree_id(repo)
     f = _state_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     # int() truncation, deliberate: the epoch must stay `.isdigit()`-parseable for _parse.
@@ -333,9 +364,9 @@ def _tracked_deletions(repo: str) -> set[str] | None:
     sets. So a caller that swapped `-z` back for the flag would leave paths this function can
     never be asked about by their real name.
 
-    None means "cannot say" — reachable: repo_id() returns on its first git call and never
-    checks for a work tree, so a bare repo or a `.git` dir gets an identity while this exits
-    128. The caller fails closed on it.
+    None means "cannot say" — reachable: a repo with no commit yet has a work tree, so
+    _tree_id() answers, while `diff-index HEAD` exits 128 on the unborn HEAD (git 2.56.0,
+    2026-11-10). The caller fails closed on it.
     """
     try:
         raw = subprocess.run(["git", "-C", repo, "diff-index", "--name-only", "--diff-filter=D", "-z", "HEAD"],
@@ -465,7 +496,7 @@ def _dead_hooks_verdict(because: str, session: str, expect_skill_log: str) -> bo
 
 def check(repo: str, session: str, files: list[str], expect_skill_log: str = "") -> int:
     now = _now()
-    rid = repo_id(repo)
+    rid = _tree_id(repo)
     epoch = _lookup(rid, session, now)
     if epoch is None:
         if _dead_hooks_verdict(f"no review record for {rid}", session, expect_skill_log):

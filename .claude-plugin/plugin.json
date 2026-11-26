@@ -1,13 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "simo-dev",
-  "version": "0.1.227",
+  "version": "0.1.294",
   "description": "Personal end-to-end dev flow: intake, review-loop, commit, MR follow-up.",
-  "author": {
-    "name": "Simone Palazzo",
-    "email": "simone.palazzo@gmail.com"
-  },
-  "skills": [
-    "./skills/"
-  ]
+  "author": { "name": "Simone Palazzo", "email": "simone.palazzo@gmail.com" },
+  "skills": ["./skills/"]
 }

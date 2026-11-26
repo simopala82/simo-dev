@@ -21,7 +21,15 @@ Usage:
 FIELD is one of: fetch_skill, transition_cmd, create_skill,
 supports_subtasks, post_merge_state, post_merge_state_no_deploy, scope_fetch_cmd, comment_cmd,
 link_cmd, assign_cmd, requirements_review_cmd, next_subtask_cmd,
-pr_body_ticket_line.
+pr_body_ticket_line, browse_url.
+
+browse_url is a template, not a command: the web page of one ticket, with
+`{key}` (the full key), `{number}` (the digits after its last dash) and
+`{repo_url}` (the repo's `origin` as an https web URL, for a tracker backed by
+the repo's own issues: "{repo_url}/issues/{number}"). This file only stores
+it; the readers are lib/flow_dashboard.py (read-only; a {repo_url} template
+gives no link there) and a status-line mod outside this plugin. Unconfigured
+-> the ticket gets no link.
 
 pr_body_ticket_line is a template, not a command: `ticket-line <KEY>`
 substitutes `{key}` (the full ticket key) and `{number}` (the digits after
@@ -29,7 +37,7 @@ its last dash) and prints the result wrapped in a blank line, ready to append
 to an MR/PR body. Typical value for a tracker backed by the same repo's
 GitHub/GitLab issues: "Closes #{number}", so the forge closes the issue on
 merge. Unconfigured, an empty KEY, or a KEY not ending in -<digits> -> prints
-nothing. simo-dev:commit step 7 is the sole consumer.
+nothing. lib/mr_create.py body (simo-dev:commit step 7) is the only caller of ticket-line.
 
 scope_fetch_cmd is invoked as `<CMD> <key> <comments>` and must print plain
 text ticket-view output to stdout; jira_scope.py is the sole consumer. A
@@ -40,8 +48,8 @@ comment_cmd is invoked as `<CMD> <key> <body-file>` and must post the
 UTF-8 text in <body-file> as one ticket comment, exiting 0 on success.
 lib/post_tracker_comment.py is the sole consumer — every gate-output
 comment the dev flow posts (direction, plan, tests performed,
-implementation summary, and mr-followup's post-merge verification
-notes) routes through it. Body always on a file, never a positional
+implementation summary, and the verification notes posted at MR open,
+skills/commit/lib/verification-notes.md) routes through it. Body always on a file, never a positional
 arg or heredoc: a positional/heredoc body hung the `jira` CLI 15+
 minutes with no output (observed 2026-08-25). jira_comment.py (not shipped
 in the published plugin) implements this contract for JIRA — configure with:
@@ -178,6 +186,7 @@ FIELDS = (
     "requirements_review_cmd",
     "next_subtask_cmd",
     "pr_body_ticket_line",
+    "browse_url",
 )
 
 

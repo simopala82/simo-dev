@@ -1,6 +1,6 @@
 ---
 name: onboard-repo
-description: Use when the user wants to set up or improve Claude Code / simo-dev conventions for a repo — the CLAUDE.md "Agent skills" section, the issue-tracker choice (local markdown vs external tracker vs none), and domain docs (CONTEXT.md / docs/adr). Triggers: "onboard this repo", "configure claude for this repo". Standalone utility, exempt from `task-intake`'s mandatory entry — same class as `spawn-task`: low blast radius, easily reversible doc/config files.
+description: Use when the user wants to set up or improve Claude Code / simo-dev conventions for a repo — the CLAUDE.md "Agent skills" section, the issue-tracker choice (local markdown vs external tracker vs none), and domain docs (CONTEXT.md / docs/adr). Triggers: "onboard this repo", "configure claude for this repo". Standalone utility, same class as `spawn-task`: low blast radius, easily reversible doc/config files.
 ---
 
 # Onboard Repo
@@ -16,8 +16,8 @@ repo-level to "install".
 
 - User asks to onboard / set up / configure Claude Code or simo-dev
   conventions for a repo.
-- Not gated by `task-intake`'s mandatory entry — same exemption class as
-  `spawn-task` (low blast radius, easily reversible doc/config files).
+- A standalone utility, outside the simo-dev flow — same class as `spawn-task`
+  (low blast radius, easily reversible doc/config files).
 
 ## How
 
@@ -31,7 +31,7 @@ repo-level to "install".
 2. **Detect state.**
 
    ```bash
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
    python3 "$R/skills/onboard-repo/lib/detect_state.py" "<repo-root>"
    ```
 

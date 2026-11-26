@@ -15,7 +15,8 @@ two-dot merge-base computation) would then include those local-only
 commits as if they belonged to the branch.
 
 merge-base --is-ancestor guards against false positives from unrelated
-local-base work the current branch never incorporated.
+local-base work the current branch never incorporated. No local <base>
+branch (no refs/heads/<base>) is safe too: nothing local can be ahead.
 
 Usage:
     check_local_base_ahead.py --repo PATH --base BRANCH
@@ -25,7 +26,8 @@ every call site already knows its own target/base branch name from
 context, so there is no default-base resolution here.
 
 Exit codes:
-    0  safe -- local base not ahead, or ahead but not an ancestor of HEAD
+    0  safe -- no local base branch, local base not ahead, or ahead but not
+       an ancestor of HEAD
     1  STOP -- local base is ahead of origin/<base> and those commits are
        in HEAD's ancestry
     2  error -- git failed (never a false STOP)
@@ -50,24 +52,30 @@ def _git(repo: str, args: list[str]) -> str:
         raise GitError(f"git {' '.join(args)}: {detail.strip()}") from e
 
 
-def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
-    # `merge-base --is-ancestor` exits 1 for a legitimate "not an ancestor" --
-    # that is a real False, not an error. Any OTHER non-zero exit (bad ref,
-    # missing object, unfetched branch) is a git failure and must raise, or
-    # an unverifiable state would silently read as "safe" (rc 0).
+def _git_test(repo: str, args: list[str]) -> bool:
+    # For git commands whose rc 1 is a legitimate "no" (`merge-base --is-ancestor`:
+    # not an ancestor; `rev-parse --verify --quiet`: no such ref) -- a real False,
+    # not an error. Any OTHER non-zero exit (bad ref, missing object, not a repo)
+    # is a git failure and must raise, or an unverifiable state would silently
+    # read as "safe" (rc 0).
     try:
-        subprocess.run(
-            ["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
-            capture_output=True, text=True, check=True,
-        )
+        subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=True)
         return True
     except subprocess.CalledProcessError as e:
         if e.returncode == 1:
             return False
         detail = (e.stderr or "").strip()
-        raise GitError(f"git merge-base --is-ancestor {ancestor} {descendant}: {detail}") from e
+        raise GitError(f"git {' '.join(args)}: {detail}") from e
     except FileNotFoundError as e:
-        raise GitError(f"git merge-base --is-ancestor: {e}") from e
+        raise GitError(f"git {' '.join(args)}: {e}") from e
+
+
+def _has_local_branch(repo: str, base: str) -> bool:
+    return _git_test(repo, ["rev-parse", "--verify", "--quiet", f"refs/heads/{base}"])
+
+
+def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
+    return _git_test(repo, ["merge-base", "--is-ancestor", ancestor, descendant])
 
 
 def analyze(repo: str, base: str) -> tuple[bool, list[str]]:
@@ -76,8 +84,10 @@ def analyze(repo: str, base: str) -> tuple[bool, list[str]]:
     local_base_ahead is True only when the local <base> is an ancestor of
     HEAD (i.e. its extra commits are already baked into the current
     branch) AND origin/<base>..<base> is non-empty (there is at least one
-    such extra commit).
+    such extra commit). No local <base> branch -> not ahead.
     """
+    if not _has_local_branch(repo, base):
+        return (False, [])
     if not _is_ancestor(repo, base, "HEAD"):
         return (False, [])
     commits = _git(repo, ["rev-list", f"origin/{base}..{base}"])

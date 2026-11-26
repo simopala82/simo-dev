@@ -1,6 +1,6 @@
 ---
 name: task-intake
-description: Use when starting work from a ticket OR a free-text task prompt. Produces a detailed plan and (at hand-off) a worktree. First step of the canonical task flow.
+description: Use only when the user explicitly starts the simo-dev flow — `/simo-dev:task-intake` or a clear request for it — from a ticket OR a free-text task prompt. Never invoke it proactively: it switches the flow on. Produces a detailed plan and (at hand-off) a worktree. On a checkout with work already in progress (changes, local commits, a plan, an open MR/PR) it proposes re-entering the flow at review-loop, plan-execute or mr-followup instead; `--adopt` skips that confirmation. First step of the canonical task flow.
 ---
 
 # Dev Task Intake
@@ -14,27 +14,33 @@ Arguments: a ticket key (e.g. `ACME-123`) or a free-text prompt. If missing, the
 
 ### 1. Determine input mode
 
-**No-argument queue check.** Runs only when `ARGUMENTS` is empty; when `ARGUMENTS` is non-empty, skip straight to the regex check below.
-
-Locate the repo root and check for `.claude/tracker-queue-cmd`:
+**Switch the flow on.** First action, before anything below. The simo-dev flow is opt-in: running this skill is what starts it. A user-typed `/simo-dev:task-intake` never reaches a Skill hook, so the skill writes the session flag itself, and the same call mints this task's ID (`lib/flow_telemetry.py`: the flow events of this task go to `~/.claude/state/dev-flow/<task-id>.jsonl`):
 
 ```bash
-TOP=$(git rev-parse --show-toplevel 2>/dev/null) && [ -f "$TOP/.claude/tracker-queue-cmd" ] && cat "$TOP/.claude/tracker-queue-cmd"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/flow_telemetry.py" start --session "$CLAUDE_CODE_SESSION_ID"
 ```
 
-(This is a minimal, read-only check — step 3's own repo pre-flight runs later.) Empty output or non-zero exit (not a git repo, or no `.claude/tracker-queue-cmd`) → fall through to the regex check below, same as `ARGUMENTS` empty today.
+A prompt that carries a `task id: <id>` line (a Shared-tree stop hand-off) adds `--task-id "<id>"` to that `start` line, so the task keeps its ID.
 
-Otherwise, run the one-line command this printed and capture its stdout. Split into lines; a line without a tab is malformed and is dropped. Empty result, non-zero exit, or every line malformed → same fallback as above (state in one line that the queue command returned no candidates before falling back).
+A prompt that carries a `parent task: <id>` line (a follow-up started from another task, `docs/canonical-flow.md` "Parent task") adds `--parent-task "<id>"` to the same `start` line; both lines can appear together. Both apply only to the intake the spawned prompt asked for, the first one in the session, never to a later intake of another task in the same session. Both are metadata, and so is a `--adopt` token (`lib/resume-path.md`): drop them from `ARGUMENTS` right here, before the No-argument queue check, so its empty test and the ticket-mode regex below see only the key or the prompt.
 
-`.claude/tracker-queue-cmd` is a normal committed file, so this command runs unconditionally, with no confirmation before execution — the `y`/`skip`/`manual` gate below only confirms the resulting *candidate*, never the command itself. Same trust model this plugin already applies to `tracker_config.py`'s `transition_cmd`/`create_skill`/`link_cmd` (also configured commands run without a per-invocation confirmation): a repo checkout is already a trust boundary, and a malicious edit to this file is no different from one to any other committed script in the tree.
+**Decided brief.** A `direction: decided` block (`docs/canonical-flow.md` "Decided brief": that line, then `decisions:` with at least one `- <decision>` line, then an optional `risk:` line) in this intake's own `ARGUMENTS`, or in the spawned prompt for the first intake of the session only (the scope above), puts this intake on the **fast path**. Never inferred from prose, however decided it reads. A `direction: decided` line without a valid block (no `- <decision>` line, other bullet markers; a code fence around the block is fine) is no hit: say `Decided-brief block malformed → full intake` in one line, and still remove it. Remove the whole block, with its fence lines when fenced, from `ARGUMENTS` at the same point as the lines above and keep it aside as the brief's decisions; on a hit skip the No-argument queue check (the regex on what remains decides the mode; nothing left → prompt mode on the spawned prompt's text, minus its metadata: the spawned-task marker line, `task id:`/`parent task:`, the block itself and the invocation line). Right after `start`, record the path (`fast` on a hit, else `full`):
 
-Otherwise, gate on the first remaining candidate `<key-or-path>` / `<title>`:
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/flow_telemetry.py" event --type gate --field skill=simo-dev:task-intake --field gate=intake_path --field answer=<fast|full>
+```
 
-> "No argument given — queue candidate: `<key-or-path>` — <title>. [y / skip / manual]"
+On a hit, Read `lib/fast-path.md` now and follow it: it names the steps below it replaces.
 
-- `y` → if `<key-or-path>` matches `^[A-Z][A-Z0-9]+-[0-9]+$`, treat it exactly as if it had been passed as `ARGUMENTS` (continue at the regex check below, which now classifies it as ticket mode). Otherwise (a `.scratch/...` path, always relative to the repo root per `local_queue_fetch.py`'s own contract) skip the regex check entirely and continue directly in prompt mode: read the file at `$TOP/<key-or-path>`, substituting the `$TOP` value this same block already computed as a literal — never a bare relative path, and never re-deriving it from the ambient shell/tool cwd (this repo's own CLAUDE.md "Worktree cwd gotcha" documents why that is unreliable). Use that file's content as the task description, per `docs/agents/issue-tracker.md`'s "fetch the relevant ticket" convention.
-- `skip` → drop the first candidate and re-show this same gate on the next remaining line, with no re-invocation of the command. Once the list is exhausted, apply the same fallback as the empty-result case above.
-- `manual` → fall through to the regex check below exactly as if `.claude/tracker-queue-cmd` had been absent.
+rc 2 from `start` (no session id, or the script missing) → one-line note, continue: step 6 writes the worktree marker anyway.
+
+**Resume check.** Off the fast path, read `lib/resume-path.md` now and follow it, before the queue check: work already in progress in this checkout (uncommitted changes, commits ahead of the base, a plan, an open MR/PR) re-enters the flow at `review-loop`, `plan-execute` or `mr-followup` behind one confirmation, skipping analysis, direction and plan. A `--adopt` token (removed above) skips that confirmation when the arguments name no other work. Nothing to resume, or `full intake` picked → continue below.
+
+**No-argument queue check.** Runs only when `ARGUMENTS` is empty; when `ARGUMENTS` is non-empty, skip straight to the regex check below.
+
+Read `lib/queue-pick.md` and follow it: it runs `.claude/tracker-queue-cmd` when the repo has one and gates on its first candidate, then returns to the regex check below.
 
 Argument matches `^[A-Z][A-Z0-9]+-[0-9]+$` → **ticket mode**; else → **prompt mode**.
 
@@ -52,62 +58,34 @@ Signals — any one of them fires the check: the ticket names more than one repo
 
 On a hit, **propose the split before opening the worktree** (step 6) and before planning (step 7): one line per sub-task, `[<repo>] <what>`, then ask. Never plan an umbrella as one unit.
 
-- Already has sub-tasks → intake the **sub-task** key, not the umbrella.
-- Sub-task creation is capability-gated: look up `supports_subtasks` and `create_skill` for the umbrella's prefix (`python3 "$R/lib/tracker_config.py" get <PREFIX> supports_subtasks`, `... get <PREFIX> create_skill`). `supports_subtasks` == `true` AND `create_skill` set → create each sub-task via the configured `create_skill`, passing the parent/umbrella key. Otherwise (either unset, or `supports_subtasks` == `false`) → do not attempt automated creation; present the one-line-per-sub-task list above as guidance only, and tell the user to create/link the tickets by hand, or configure `create_skill`/`supports_subtasks` to automate it next time.
-- **Gated sub-tasks get a "blocked by" link, when configured.** The split signals above already distinguish gated parts from ready ones — record that dependency instead of only stating it in the split proposal text. After creation, for each sub-task blocked by another part of the same split (or by an already-known external ticket key), look up `link_cmd` for the prefix (`python3 "$R/lib/tracker_config.py" get <PREFIX> link_cmd`); set → `python3 "$R/lib/tracker_config.py" run <PREFIX> link_cmd <blocked-key> <blocker-key>`, best-effort (non-zero exit only warns, continue — same pattern as `transition_cmd`). Not configured → no special-case; the dependency stays stated in the split proposal text only, same fallback shape as unconfigured `create_skill`.
-- **Opening state**: whatever `create_skill` gives a new ticket by default (the project's own initial workflow state — often `Backlog`, not necessarily `To Do`). Never force a specific state here — that is tracker/project-specific and step 5.6's own "Take ticket in charge" already moves it forward once intake for that sub-task actually starts.
-- **After creation, continue on the sub-task(s) ready to start now, when automated creation ran.** Applies only when the capability gate above actually created tickets — the manual path (guidance-only, no `create_skill`) has no key yet to continue on; stop there as today, after presenting the list. With created keys: exactly one ready now (not blocked/gated, per the signals above) → continue this session's intake on it directly (its key; skip re-fetching what step 2 already has for the umbrella if the sub-task's own scope is a strict subset). More than one ready now → ask which to start here, or — if `mcp__ccd_session__start_session` is available (not yet callable → `ToolSearch` `select:mcp__ccd_session__start_session` once, never skipped because the name is unlisted; no schema, or no `ToolSearch` → just ask) — offer to start one session per ready sub-task (on yes: `initiation` `user_asked`, `context` `fresh`, `use_worktree` `true`, `source_branch` = the sub-task repo's base branch `<base-branch>` (the ticket's own `<base>` is not known yet): its short name with `origin/` stripped (`git -C <repo-root> symbolic-ref --quiet --short refs/remotes/origin/HEAD`), passed only when that resolves and exists as a local branch (`git -C <repo-root> rev-parse --verify --quiet "refs/heads/<base-branch>"`; `start_session` takes an existing local branch only), else omit it, and for a sub-task in another repo `cwd` = its repo root, resolved and shown in the yes/no question the way `simo-dev:mr-followup` `lib/post-merge.md` step 8.6 does, `title` `Intake <key>`, a `background` of ≥80 chars, prompt per `lib/handoff-spawn.md`'s marker line plus `simo-dev:task-intake <key>`; each gets its own worktree at step 6). None ready now (every sub-task is blocked/gated) → the split genuinely is this session's whole output; report it and stop, same as late promotion's step 4 leaves a not-yet-startable part for its own future `task-intake` invocation (re-invoking on that key lands in ticket mode per step 1 — it already exists).
-- **Too big for ticket + sub-tasks** (more than ~5 sub-tasks, or the split itself spans multiple planning horizons) → escalate one level: the umbrella becomes an **Epic**, each sub-task becomes a **User Story** under it (optionally further split into its own sub-tasks). Same capability gate and creation flow, one level up; propose the Epic/Story breakdown the same way, then ask.
-
-#### Parent status sync
-
-The umbrella's status tracks the **aggregate of its sub-tasks**, forward-only, never a status frozen at intake: one sub-task still `In Progress` → umbrella `In Progress`; every sub-task at `Testing` → umbrella `Testing`; mixed sub-tasks (some started, some not) → umbrella `In Progress`, not the pure minimum; every sub-task at/past `Done` → the umbrella needs a **whole-feature verification** before it can close (a per-sub-task check does not confirm the parts work together), so it closes only after that verification **and** an explicit user confirmation — offered by `simo-dev:mr-followup` step 8.6 (via `next_subtask_cmd`'s `parent_complete`) or by a project's release skill that mirrors the same contract. The same post-merge step also offers the next ready sibling sub-task as a new session (gated y/N).
-
-Mechanism: `jira_forward_transition.py` (the JIRA `transition_cmd` binding) takes `--sync-parent` — after transitioning a leaf, it walks the leaf's Jira parent (if any) forward to the minimum-advanced state among ALL its sub-tasks — floored at `In Progress` once any sub-task has started (the mixed-children cap) — or exits 7 when that minimum is `Done`. `simo-dev:commit` and `simo-dev:mr-followup` add `--sync-parent` to their existing `transition_cmd ... --leaf-only` / post-merge calls — no action needed here beyond intaking sub-tasks normally; sync happens automatically at every leaf transition from then on. Those two skills also pass `--clear-blocked` (the work is done, so lifting a tracker-side Blocked flag is intended there); this skill's own step 5.6 call does not. `--leaf-only` (refusing to transition an umbrella key directly) and `--sync-parent` (syncing a leaf's parent) are orthogonal — both can be passed together with no conflict, though in practice only leaf calls carry `--sync-parent`.
-
-The exit-7 case only fires through a call that actually carries `--sync-parent` when a sub-task reaches `Done`. simo-dev's own wired call sites stop at `post_merge_state` (`Ready for Testing` by default) — `Ready for Deploy`/`Done` happen later, at release time, via each project's own release skill (`docs/canonical-flow.md` "Ticket auto-transitions"), which lives outside this plugin. rc 7 is the signal a caller turns into the user-confirmed close gate above. A release skill may mirror the `next_subtask_cmd` JSON contract (`lib/tracker_config.py`) to offer that gate itself; where none does, a sub-task reaching `Done` at release time does not re-check its umbrella, and that check stays manual.
-
-#### Late promotion — multi-system impact discovered mid-flow
-
-The signals above can surface after intake ends — typically during `simo-dev:commit` step 0.7 knowledge harvest, when the diff or a doc turns up an impact on another system that wasn't visible from the ticket alone (e.g. a schedule change that also needs a Grafana alert rule flipped in another repo) — or earlier, still **mid-intake**, when step 4's own gate investigation (a redirect loop chasing a fuzzy signal) turns up the same kind of signal before any worktree or plan exists (see step 4's "Split signal found mid-gate"). Treat both the same way, with one exception for the mid-intake case (below):
-
-1. Propose the split exactly as above (one line per part, ask).
-2. Create the sub-task(s) under the **current** ticket via the same `create_skill`/`supports_subtasks` gate — the current ticket becomes the umbrella retroactively. One sub-task should cover the work already done on the current branch; the caller decides what its Jira state should be (usually the same state the umbrella is currently at).
-3. **Point this branch's flow at the sub-task, without renaming an already-pushed branch**: write the sub-task key to `.claude/ticket-key-override` in the worktree root (single line, e.g. `PROJ-1994`) — `derive_ticket_key.py` reads it before falling back to the branch-derived key, so every later transition in this session (commit, mr-followup) targets the sub-task automatically. Worktree-local and untracked; never commit it — check `.claude/ticket-key-override` is gitignored in this repo BEFORE writing it, same as step 6 does for `.worktrees/`: this repo's own `.claude/.gitignore` carries the entry, but another repo running this flow needs its own (`.git/info/exclude` — local, uncommitted, same mechanism step 6 uses — is safer than a tracked `.gitignore` line, since it needs no commit of its own in a repo this session may not otherwise be touching).
-4. If a second, not-yet-startable part exists (e.g. gated on a deploy), create its sub-task too and leave it for its own future intake — it gets its own branch/worktree when picked up.
-
-**Mid-intake (from step 4, before step 6 runs (now deferred to step 8)): steps 1-2 apply as written, but skip step 3** — there is no branch yet to redirect via `.claude/ticket-key-override`. Continue from step 2 on the sub-task key instead (context re-fetch optional per step 2.5's "ready now" bullet), then step 4.5 (ticket mode, on the sub-task key) and step 5 onward — step 5.6 takes the sub-task in charge when reached, no separate re-run needed.
-
-Worked example: PROJ-100 (a service's schedule tune) turned out to also require flipping 2 live Grafana alert rules. Split into PROJ-101 (the schedule work, already done — override written on the existing branch) and PROJ-102 (the alert gate flip, gated on deploy — a fresh sub-task, intaken separately later). PROJ-100 became the umbrella, synced per the section above once both land.
+Read `lib/umbrella-split.md` and follow it for the split itself: sub-task creation behind the `supports_subtasks`/`create_skill` gate, "blocked by" links, which sub-task to continue on, and the Epic escalation. The same file holds **Parent status sync** (the umbrella's status follows its sub-tasks: `--sync-parent`, exit 7, the user-confirmed close) and **Late promotion** (the same signals found after intake, or mid-intake at step 4's gate): read it whenever either one is cited.
 
 ### 3. High-level system-impact analysis
 
-**Repo pre-flight (check first)** — one call, because reading the toplevel and the cwd separately lets them answer from different repos:
+**Repo pre-flight (check first)** — one call (step 1's resume check already ran it: reuse its output, unless the cwd changed since):
 
 ```bash
-git rev-parse --show-toplevel --show-prefix --abbrev-ref HEAD --path-format=absolute --git-dir --git-common-dir
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/worktree_resolve.py" resolve --dir .
 ```
 
-**Check the exit code and the line count before reading anything positionally.** Five lines and exit 0 is the good case: toplevel, prefix (**empty line** when the cwd *is* the toplevel), `HEAD` if detached else the branch, absolute git dir, absolute common git dir. An **unborn HEAD** prints only **three** and exits 128 — `rev-parse` echoes the literal `HEAD` before the fatal — so a positional read takes `HEAD` as the branch and gets no line 5, making `<REAL>` = `dirname ""` = `.`: a relative path that resolves against the ambient cwd instead of failing, which then passes the tests below (verified 2026-08-05, git 2.55.0). Short output or non-zero → STOP, and do not read the lines.
+Keep its lines as literals for the rest of the run — `top:` = `<TOP>`, `headref:` = `<HEADREF>`, `gitdir:` = `<GITDIR>`, `real:` = `<REAL>` (the main checkout that owns the tree), `submodule:`, `real_ok:`, `row:` — and never re-read them bare later: the Bash cwd drifts. Verdicts:
 
-`--path-format=absolute` only affects the options after it, so it must precede both dir options. Lines 4 and 5 are equal exactly when this is **not** a linked worktree: git gives each linked worktree its own git dir under `<common>/worktrees/<x>` while the common dir stays shared (`git-worktree(1)`, "the .git directory"), so equality holds for a main checkout and for a submodule working tree and fails for every linked worktree, including one of a bare repo (checked on the 11 live worktrees here plus 11 constructed shapes, 2026-08-05). `<REAL>` = `dirname` of line 5 = the main checkout that **owns** this tree. The verdict is a function of those values — never of how absurd the path looks:
-
-- `<REAL>` contains `.claude/plugins/cache/` or `.claude/plugins/marketplaces/` → a marketplace/cache copy, or a worktree of one: a different project. **STOP.**
-- **prefix** under one of those paths → a git-less rsync copy. `rev-parse` walked *up* to an unrelated outer repo, so the toplevel carries no `plugins/` segment and a toplevel-only test never fires — example: the worktree came out missing one of the plugin's `skills/<name>/` subdirectories entirely. **STOP.**
-- **line 4 ≠ line 5** and neither of the above → a linked worktree of a legitimate repo. **Not a pre-flight stop**: forward to step 6, which adopts it in place, moves it and adopts it, leaves it alone, or stops and asks — depending on its location and whether the desktop app created it. Do not route it to `lib/repo-preflight.md` — that resolves the *marketplace* remote, and this tree's remote is `<REAL>`'s. Use the two dirs here, not `<REAL>` ≠ toplevel: for a submodule working tree `<REAL>` is a `<super>/.git/modules/<sub>` path, so that proxy would label a perfectly normal checkout a misplaced worktree.
-- **line 4 == line 5** → a main checkout or a submodule working tree: nothing special, step 6 creates a worktree the normal way.
+- rc 1 `STOP:` with no `row:` → a different project (a plugin cache or marketplace copy, or a git-less rsync copy of one inside an unrelated repo) or no usable repo (unborn HEAD, not a repo). **STOP**; for the two plugin-copy STOPs the recovery is in `lib/repo-preflight.md`.
+- rc 3 `NEED: shared-check` → a desktop-app tree: run step 6's **Shared-tree check** now and re-run this call with its flags, before Explore, `grill-me` or the plan touch the tree. `row: 3s` (a shared tree) → step 6's row 3s at once, `lib/shared-tree-stop.md`.
+- any other row → continue; step 6 acts on it. This call passes no `--branch`, so row 4 and a failed `<REAL>` assert (`real_ok: no`) stop only there.
 
 Also, if the task involves an existing path, verify it's tracked: `git ls-files <path>` (empty = not here → warn, wait for confirmation). Must clear before anything below writes artifacts to the tree.
 
 > Recovery procedure (find the real clone, residual-case cleanup): `lib/repo-preflight.md` — load when either STOP or the tracked-path check fires.
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 EXPLORE_MODEL=$(python3 "$R/lib/model_strategy.py" get explore_research)
 [ -z "$EXPLORE_MODEL" ] && EXPLORE_MODEL="sonnet"
 ```
 
-**Personal reference check** — before dispatching Explore, match external service/product names mentioned in the ticket/prompt against `~/.claude/reference/` filenames (`ls ~/.claude/reference/ 2>/dev/null | grep -i <name>` per name). This tree is outside any target repo, so neither Explore agent below covers it (Agent B is repo-scoped). Any match → read it now and fold relevant facts (auth, known gotchas, request/response shapes) straight into the step-3 summary — additive to the ≤200-word cap below, not counted against it — so `plan-write`/`grill-me` inherit them instead of re-discovering them at runtime. Describe facts, never paste literal secrets (passwords, tokens, keys) that some reference files inline (e.g. `local-services.md`) — this summary can end up in a ticket comment or a committed plan file.
+**Personal reference check** — before dispatching Explore, match external service/product names mentioned in the ticket/prompt against `~/.claude/reference/` filenames (`ls ~/.claude/reference/ 2>/dev/null | grep -i <name>` per name). This tree is outside any target repo, so neither Explore agent below covers it (Agent B is repo-scoped). Any match → read it now and fold relevant facts (auth, known gotchas, request/response shapes) straight into the step-3 summary — additive to the ≤200-word cap below, not counted against it — so the plan brief and `grill-me` inherit them instead of re-discovering them at runtime. Describe facts, never paste literal secrets (passwords, tokens, keys) that some reference files inline (e.g. `local-services.md`) — this summary can end up in a ticket comment or a committed plan file.
 
 **Domain glossary check** — `CONTEXT.md` at the repo root (or the relevant file(s) under the context dir per `CONTEXT-MAP.md`) is written by `grill-me`'s domain capture and the commit knowledge-harvest, but until now neither this step nor `plan-write` ever read it back — Agent B's own scope is patterns/utilities/tests, not the glossary, and this check front-loads terms before Explore even returns. If present, read it now and use its terms when interpreting the ticket/prompt; fold any term relevant to this task into the summary, same cap treatment as above.
 
@@ -120,52 +98,59 @@ Aggregate into a ≤200-word summary printed as normal reply text in chat (never
 
 ### 4. Direction confirmation gate (always-on)
 
-Fires unconditionally — the main defense against "implemented the wrong thing".
+Fires unconditionally — the main defense against "implemented the wrong thing" — except on the fast path (`lib/fast-path.md`), where the brief already decided the direction.
 
-**4a.** Append to the summary: 2-3 candidate directions, one line each, recommended one marked (`→ A (recommended): ...`). Surface any fuzzy signal explicitly ("⚠ AC empty / sync vs async unresolved / ...").
+**4a.** Append to the summary: 2-3 candidate directions as a lettered list, one line each, exactly one marked `(preferred)` (`a. (preferred) ...`). Surface any fuzzy signal explicitly ("⚠ AC empty / sync vs async unresolved / ...").
 
-**4b. Fuzzy signals** (drive the default answer): AC empty/vague/contradictory; one-liner prompt with no clear target; multiple plausible interpretations; unresolved design choices; undocumented cross-team impact; unaddressed perf/migration/data-loss risk; open architecture-level decisions; **each non-trivial choice silently resolved inside the recommended direction** (a decision you made for the user is an ambiguity you hid, not one you removed — count it).
+**4b. Fuzzy signals** (drive the `Recommended:` letter): AC empty/vague/contradictory; one-liner prompt with no clear target; multiple plausible interpretations; unresolved design choices; undocumented cross-team impact; unaddressed perf/migration/data-loss risk; open architecture-level decisions; **each non-trivial choice silently resolved inside the preferred direction** (a decision you made for the user is an ambiguity you hid, not one you removed — count it).
 
-**4b-bis. Recommended path** (print one line: `Recommended path: <X> — <why>`):
+**4b-bis. Escalation path** (no line of its own — its verdict and reason fold into 4c's `Recommended:` line `<why>`):
 
 | Signal | Path |
 |---|---|
-| 0-1 fuzzy signal, scope clear | `direct` — gate default `y` |
+| 0-1 fuzzy signal, scope clear | `direct` — `Recommended:` picks the preferred direction |
 | 2-4 discrete open decisions | `simo-dev:grill-me` (decisions mode) |
 | open scope / architecture-level / ≥2 fuzzy signals / prompt-without-ticket | `simo-dev:grill-me` (design mode) |
 
 Escalation is safe wherever grill-me writes artifacts — the step-3 pre-flight already confirmed the cwd is a legitimate repo. If it forwarded a misplaced worktree to step 6, the artifacts still survive (the move carries untracked files) but any absolute path already quoted to the user goes stale — re-state it after the move.
 
-**Split signal found mid-gate.** If the investigation behind this gate — including a redirect loop chasing a fuzzy signal — surfaces one of step 2.5's split signals (e.g. an external dependency blocks only part of the work), apply **late promotion** (step 2.5's "Late promotion" section, mid-intake case) right here, before asking for `y`: propose the split, create sub-task(s), continue on the right key. Don't wait for the user to ask — worktree and plan don't exist yet at this point, so redirecting now is free.
+**Split signal found mid-gate.** If the investigation behind this gate — including a redirect loop chasing a fuzzy signal — surfaces one of step 2.5's split signals (e.g. an external dependency blocks only part of the work), apply **late promotion** (step 2.5's "Late promotion" section, mid-intake case) right here, before printing the `Recommended:` letter: propose the split, create sub-task(s), continue on the right key. Don't wait for the user to ask — worktree and plan don't exist yet at this point, so redirecting now is free.
 
-**4c. Summarize, then ask (always).** Restate the recommended direction in 2-4 plain bullets (what, where, key choices) — the user must be able to approve from this block alone. Then a **`Choices made:` list** — every non-trivial decision embedded in the recommended direction (sync vs async, new field vs reuse, library picks, ...), one line each, ending with "— `deep-dive` to challenge these". Omit the list only when there is genuinely nothing decided beyond the literal request. **Do NOT use AskUserQuestion for this gate** (observed twice: the summary gets crammed into truncating widget fields). END THE TURN with plain markdown: bullets, candidates, then:
+**4c. Summarize, then ask (always).** Restate the preferred direction in 2-4 plain bullets (what, where, key choices) — the user must be able to approve from this block alone. Then a **`Choices made:` list** — every non-trivial decision embedded in the preferred direction (sync vs async, new field vs reuse, library picks, ...), one line each, ending with "— `deep-dive` to challenge these". Omit the list only when there is genuinely nothing decided beyond the literal request. **Do NOT use AskUserQuestion for this gate** (observed twice: the summary gets crammed into truncating widget fields). END THE TURN with plain markdown: bullets, then one lettered list — the candidate directions (4a), then `deep-dive`, then `redirect <reason>` — then one `Recommended: <letter> — <why>` line and the prompt:
 
-> "Direction look right? [y / redirect / deep-dive]"
-> Default: `deep-dive` if ≥2 fuzzy signals OR prompt mode without a ticket OR open architecture decision; else `y`.
+> "Direction look right? `[y = <letter> / a–<last>]`"
 
-- `y` → step 4.5.
-- `redirect <reasoning>` → incorporate, re-run Explore if needed, re-present. Loop until `y`.
+`Recommended:` selection: the `deep-dive` letter when ≥2 fuzzy signals OR prompt mode without a ticket OR an open architecture decision, or when 4b-bis gives a `grill-me` row; else the preferred direction. Exception: once a deep-dive has already run in this intake, or 4b-bis now gives `direct`, recommend the preferred direction — otherwise "prompt mode without a ticket" would send `y` back into grill-me forever. `y` takes the `Recommended:` letter.
+
+- The preferred direction's letter → step 4.5.
+- Another direction's letter → re-present this gate with that direction restated (bullets + its own `Choices made:`) as the new `(preferred)`.
+- `redirect <reason>` (answered as `<letter> <reason>` or `redirect <reason>`; `y` on a recommended `redirect` asks for the reason first) → incorporate, re-run Explore if needed, re-present. Loop until the preferred direction's letter.
 - `deep-dive` → escalate per 4b-bis, announce in one line, invoke, re-present this gate.
 
-Gate exits only on `y`.
+Gate exits only on the preferred direction's letter. Record the answer as a flow event (`<answer>` = the letter picked):
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/flow_telemetry.py" event --type gate --field skill=simo-dev:task-intake --field gate=direction --field answer=<answer>
+```
 
 ### 4.5. Requirements write-back (always-on)
 
-Runs once step 4's gate exits on `y` (direction approved), before step 5.
+Runs once step 4's gate exits on the preferred direction's letter (direction approved), before step 5.
 
 **Draft.** From the approved direction (the candidate directions plus the `Choices made:` list already produced at step 4c), write a **Requirements / Acceptance Criteria** block: 3-6 bullets, each a condition checkable true/false against the finished work — not a restatement of the direction prose. Keep it as its own block; it is what gets written to the ticket, not shown to the user again here. Write it to a temp file, same as step 5.5's own comment body does.
 
 **Ticket mode** (key already known — from step 1's mode determination, or from a freshly-created sub-task key on the late-promotion path): invoke the hook now.
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_requirements_review.py" "<KEY>" "<tmpfile>"
 ```
 
 **`--replace` rule.** Use this block INSTEAD of the one above (never after it) only when step 7.5's `restart` sent THIS task-intake invocation (counted from its own step 1) back to step 4 or 3 after it had already announced `Requirements: posted: <KEY>` for the same key. A `posted:` line from an earlier task-intake invocation in the same session never counts — a follow-up intake must not overwrite the original ACs. In doubt (e.g. the announce line is no longer in context), no flag.
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_requirements_review.py" "<KEY>" "<tmpfile>" --replace
 ```
 
@@ -201,7 +186,7 @@ Runs always, both modes, right after step 5 resolves (so the ticket key — if a
 Body = the direction approved at step 4's gate: the candidate directions with the chosen one marked, the final `Choices made:` list, and any `⚠` fuzzy-signal lines that were surfaced. If step 4.5 announced `skipped: prior requirements block present`, also append the Requirements / AC block drafted there, under its own heading. Write it to a temp file, then:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_tracker_comment.py" "<KEY-or-empty>" "<tmpfile>"
 ```
 
@@ -210,14 +195,14 @@ Announce the result in one line: `Direction: <script's stdout line>` (e.g. `Dire
 If step 4.5 ran without a key yet (its Prompt mode branch, not its Ticket mode branch), invoke the deferred requirements write-back now, using the block drafted at step 4.5 and the key just resolved by step 5:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_requirements_review.py" "<KEY-or-empty>" "<tmpfile>"
 ```
 
 Only under step 4.5's `--replace` rule, use this block instead:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_requirements_review.py" "<KEY-or-empty>" "<tmpfile>" --replace
 ```
 
@@ -230,7 +215,7 @@ Runs always, both modes, right after step 5.5's comment resolves — by this poi
 Assign first, then transition, both best-effort:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/tracker_config.py" run "<ticket-prefix>" assign_cmd "<ticket-key>" || echo "WARNING: assign_cmd failed for <ticket-key> (continuing)"
 python3 "$R/lib/tracker_config.py" run "<ticket-prefix>" transition_cmd "<ticket-key>" "In Progress" --sync-parent; rc=$?
 if [ "$rc" -eq 8 ]; then echo "BLOCKED: transition_cmd reports a Blocked ticket for <ticket-key> or its parent, see the script's BLOCKED line for which key (continuing)"
@@ -247,161 +232,79 @@ On BLOCKED, tell the user in plain words which key is Blocked, reading it from t
 
 ### 6. Branch and worktree
 
-This procedure no longer runs unconditionally before step 7 — it is invoked from step 8, once step 7.5's gate has decided the hand-off routing. In-session: the orchestrator runs it here, live. `start_session`: the spawned child runs it, from its own actual location — never using values the orchestrator computed, since the child's location is not predictable from here.
+Invoked from step 8, once step 7.5's gate has decided the hand-off routing. In-session: the orchestrator runs it here, live. `start_session`: the spawned child runs it, from its own actual location — never using values the orchestrator computed.
 
-Branch name: `<type>/<jira-key-lowercase>-<short-desc>` with a ticket key (e.g. `feat/proj-1234-topn-by-maxrank`), `<type>/<short-desc>` without. `<type>` ∈ `feat|fix|chore|refactor|docs|test|perf`; `<short-desc>` = 3-6 hyphenated lowercase tokens.
+Branch name: `<type>/<jira-key-lowercase>-<short-desc>` with a ticket key (e.g. `feat/proj-1234-topn-by-maxrank`), `<type>/<short-desc>` without. `<type>` ∈ `feat|fix|chore|refactor|docs|test|perf`; `<short-desc>` = 3-6 hyphenated lowercase tokens. `<name>` = the branch minus `<type>/`.
 
-**Worktree pre-flight**: already verified at step 3. Re-check only if the cwd changed since (redirect to another repo, manual switch) — re-run the step-3 check there. Artifacts already written in a wrong repo (pre-flight bypassed / older mid-flight session) → recovery in `lib/repo-preflight.md` (cp, never cross-repo stash).
+Always a worktree, no opt-out (the one exception is step 1's resume check, `lib/resume-path.md`). Never a second one when this session already sits in one: that gave two branches and two MRs for one change (`!35`/`!36`, `!20`/`!21`). ⚠ Never the native `EnterWorktree` tool (`lib/worktree-carry.md`). Every path below is a **literal absolute path** taken from the script's output, used as `git -C "<path>"`, never a shell variable or `$(pwd)` (CLAUDE.md "Worktree cwd gotcha"). The row table, its definitions and their evidence live in `lib/worktree_resolve.py`'s docstring: read it only when an outcome looks wrong.
 
-**Worktree — always, no opt-out** (the `.claude/no-worktree` marker is retired): **manual `git worktree add`** at `<repo>/.worktrees/<name>` (branch name minus `<type>/` prefix). Create `.worktrees/` if missing, ensure gitignored. ⚠ **Never the native `EnterWorktree` tool**: it moves only the session dir while the Bash cwd is unreliable in both directions — split-tree writes have put commits on `develop`. Always `git -C "<worktree-abs>"` + absolute paths, substituted as literals (canonical wording: CLAUDE.md "Worktree cwd gotcha"). **Do not act on this paragraph before reading the next one** — if this session already sits in a worktree, adding one here is the duplicate-MR bug.
+**Resolve.** `<TOP>` = step 3's `top:` line; the cwd changed since (redirect to another repo, manual switch) → re-run step 3's call there first. Artifacts already written in a wrong repo → `lib/repo-preflight.md` (cp, never a cross-repo stash). On a desktop-app tree (step 3 needed the shared-tree check), run the **Shared-tree check** below again and pass its flags: step 3's answer can be many turns old.
 
-**Already sitting in a harness worktree — adopt it (moving it first only on row 3b), never add a second one.** A session launched from the spawn menu's "spawn in worktree" entry already sits in one: random dir name, and a `claude/*` branch whose name is a *different* random word pair (`heuristic-robinson-1869ce` carried `claude/dazzling-herschel-d2018d`). **Step 3's pre-flight already produced all five values — reuse those literals rather than re-deriving them here**, including its exit-and-line-count verdict. What must not happen is a *bare* re-read: step 3 can be many turns back (gate loop, grill-me, ticket creation) and an ambient `git rev-parse` answers from whatever repo the cwd points at by then. Re-reading with `git -C "<TOP>"` is fine and is what the step-4 `redirect` case needs — re-run step 3's call in the new repo and take the new values. Never detect from the branch alone — most harness worktrees observed 2026-07-28 sat on detached HEAD, where `git branch --show-current` prints nothing and exits 0.
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/worktree_resolve.py" resolve --dir "<TOP>" --branch "<branch>" --base "<base>" <shared-check flags>
+```
 
-Substitute `<TOP>` and `<REAL>` as **literal absolute paths** into every command below — never a shell variable, which is empty by the next Bash call and degrades silently rather than failing. Mechanism and evidence: CLAUDE.md "Worktree cwd gotcha" (the canonical copy — do not restate it here).
+Run every `run:` line as printed, in order; a non-zero is a stop. `wt:` is `<WT>`, the worktree this step ends in; `next:` names what follows (`adopt`, `close` = the **Close** block, `follow-up`). rc 1 `STOP: <reason>` → nothing ran: report the reason and ask (a missing-directory STOP on a re-entry after a row-3b move: `lib/worktree-rare-paths.md` "Row 3b: the move fails, or ran in an earlier run"). By `row:` (first match wins):
 
-**The `.claude/worktrees/` path is the harness signal that held up — do not try to infer it from the branch.** A detached HEAD says nothing about who made the tree: a release or inspection worktree checked out on a tag reports `HEAD` too, whether it sits inside `.worktrees/` or somewhere like `~/projects/myservice-v1.2` (verified 2026-08-05). Two designs were tried and both hijacked such a tree — `switch -c`ing it off its tag and rebasing it. `<HEADREF>` is used only *inside* the adopt steps, to pick the rename form. What authorizes a rename is the path.
-
-Definitions — the first three are step 3's output lines, bound here so nothing below has to re-derive them (`git branch --show-current` in particular prints nothing on a detached HEAD, which would send every harness tree to row 4):
-
-- **`<TOP>`** = line 1, **`<HEADREF>`** = line 3 (`HEAD` when detached, else the branch), **`<GITDIR>`** = line 4, **`<REAL>`** = `dirname` of line 5.
-- **harness path** — `<TOP>` contains a `/.claude/worktrees/` segment, at any depth. That one pattern covers every misplaced shape seen here: `.claude/worktrees/<random>`, the doubled `.claude/.claude/worktrees/<random>`, one parked under `.claude/plugins/cache/**`, and one nested inside another worktree — all 7 live harness trees match it (2026-08-05). Treat it as the observed set, not a closed one.
-- **canonical path** — `dirname "<TOP>"` equals `<REAL>/.worktrees` exactly. A prefix test is not enough: a worktree spawned from *inside* a worktree lands at `<parent-worktree>/.claude/worktrees/<random>`, which starts with `<REAL>/.worktrees/` yet sits in the directory `mr-followup` step 8 removes when the parent task merges. Nested worktrees share the main `.git`, so `<REAL>` is the main checkout either way (verified 2026-08-05).
-- **desktop-app tree** — `[ -e "<GITDIR>/claude-desktop-worktree" ]`: the empty file the Claude desktop app writes into the per-worktree git dir of a session worktree it created. Observed in 3/3 desktop-app trees across 2 repos and 0/3 canonical trees (2026-10-19) — an observed set, not a closed one. Never infer it from the path or the branch name.
-- **`<WT>`** — the worktree this step ends up working in, on every row: `<repo>/.worktrees/<name>` on rows 1/2 once the `git worktree add` below has run; on row 3b, `<REAL>/.worktrees/<name>` once the move-or-resume below has run (moved fresh, or already there from an earlier run); `<TOP>` on row 3a. Row 4 stops. A literal too, never re-derived from `$(pwd)`.
-
-**First matching row wins**, and row 1 is evaluated **before** the `<REAL>` assert below, because `<REAL>` is meaningless for the shapes it catches:
-
-| # | Condition | Action |
+| # | Tree | Action |
 |---|---|---|
-| 1 | **line 4 == line 5** | not a linked worktree at all — a main checkout or a submodule working tree → normal `git worktree add`, `<repo>` = the toplevel. First, because a main checkout can sit on a detached HEAD (bisect, tag inspection) and a submodule's `<REAL>` is a `.git/modules/**` path that is not a checkout |
-| 2 | **canonical path** | already the canonical layout, so not a harness tree → normal `git worktree add`, `<repo>` = `<REAL>`. Someone else's task tree gets a sibling. If it is this task's own tree resumed, the existing-branch block at the end of this step handles it — with a gap that predates this rule and is not fixed here: both of that block's outcomes issue a `git worktree add`, which cannot run from inside the tree (`fatal: '<path>' already exists`). The old `*/.claude/worktrees/*` gate routed the same input to the same place |
-| 3a | **harness path** and a **desktop-app tree** (`<GITDIR>/claude-desktop-worktree` exists) | → **adopt in place**, `<WT>` = `<TOP>`; **never** `worktree move`. The app's isolation hook keys on the tree's original path: after a move it refuses every Edit/Write at the new path, and only moving it back recovers (observed 2026-10-19). The same hook also refused Edit/Write on a canonical `<REAL>/.worktrees/<name>` the session had created itself ("is in the base repo checkout", observed 2026-10-20), so a desktop session never adds a sibling canonical worktree as a workaround — adopt in place, adopt step 1's merged-branch path included |
-| 3b | **harness path**, no desktop-app marker | → **move** to `<REAL>/.worktrees/<name>`, then adopt |
-| 4 | anything else | **STOP and ask.** A linked worktree of `<REAL>` that is neither canonical nor a harness path was placed deliberately — a release checkout, a bisect tree, a hand-made worktree. Moving it and renaming its branch is the hijack this row exists to prevent |
+| 1 | main checkout or submodule working tree | `run:` fetch, `worktree add --no-track <repo>/.worktrees/<name> -b <branch> origin/<base>` (a local `.worktrees/` exclude when not ignored) |
+| 2 | canonical `<REAL>/.worktrees/<x>` | same, `<repo>` = `<REAL>` |
+| 3s | desktop-app tree another live session works in (a **shared tree**) | **STOP**: read `lib/shared-tree-stop.md` and follow it. Nothing is written, renamed or parked |
+| 3a | this session's own desktop-app tree | **adopt in place**, `<WT>` = `<TOP>`; never moved, and never a sibling canonical worktree as a workaround (the app's isolation hook refuses Edits on both) |
+| 3b | harness `.claude/worktrees/` tree, no desktop marker | `run:` move to `<REAL>/.worktrees/<name>` (non-zero: `lib/worktree-rare-paths.md` "Row 3b"), then **adopt** |
+| 4 | any other linked worktree (release, bisect, hand-made) | **STOP and ask**; never move or rename it |
 
-Rows 3a and 3b are the only rows that rename, and both require the harness path. Below, a bare "row 3" means either of them. That is the invariant, enforced by construction rather than restated — though it only holds **unattended**: row 4 hands the decision to the user, who may of course authorize anything.
+`next: follow-up` (rows 1/2: `origin/<branch>` exists, step 7.5's `follow-up` bypass) → no `run:` lines; read `lib/worktree-rare-paths.md` "Follow-up on an EXISTING branch/MR" and follow it instead.
 
-Before rows 2-4 use `<REAL>`, assert it is a real checkout. On a worktree of a **bare** repo, `dirname` of the common dir is the bare repo's *parent* (CLAUDE.md "Repo name from a worktree"), which need not be a repo at all:
-
-```bash
-git -C "<REAL>" rev-parse --show-toplevel   # MUST print <REAL> exactly; error or mismatch → STOP and ask
-```
-
-Not `--is-bare-repository`: it answers from the nearest **ancestor** repo, so it prints `false` for a plain directory sitting inside somebody's working tree (verified 2026-08-05). Toplevel equality rejects that, and a bare `<REAL>` errors outright. Row 1 must precede it: a submodule's `<REAL>` fails this assert (`fatal: this operation must be run in a work tree`) even though the tree itself is perfectly normal.
-
-Row 3b only — row 3a skips this block and goes straight to the foreign-commit check with `<WT>` = `<TOP>`. Moving, or resuming a move an earlier run already made. `<name>` is the canonical branch minus the `<type>/` prefix. A `plugins/` path is not special here: step 3 already stopped on the two shapes that are a **different repo**, so whatever reaches this point is a linked worktree of `<REAL>` in a directory nobody chose. This runs **before** the foreign-commit check below, because that check needs `<WT>` resolved — and on a re-entry, `<TOP>` from this run's step 3 call may already be gone (the previous run moved it):
+**Adopt** (rows 3a and 3b, after the move): renames the harness branch to `<branch>` and freshens it, keeping the tree's pending work.
 
 ```bash
-# Guard FIRST. Onto an existing directory `worktree move` exits 0 and registers the worktree one
-# level deeper (`.worktrees/<name>/<random>`) — silent and wrong. Reachable on a retried adopt, or
-# when an earlier `worktree remove --force` left the directory behind. One occupant is benign: THIS
-# tree, already moved by an earlier run (the foreign-commit question was answered, then re-entry).
-# It is the same worktree iff its git dir is <GITDIR> — that is a resume, not a collision.
-[ -e "<REAL>/.worktrees/<name>" ] && {
-  [ "$(git -C "<REAL>/.worktrees/<name>" rev-parse --path-format=absolute --git-dir)" = "<GITDIR>" ] \
-    && { echo "already moved — skip straight to the foreign-commit check and the adopt steps"; exit 0; } \
-    || { echo "STOP: a different worktree occupies the destination, ask"; exit 1; }
-}
-mkdir -p "<REAL>/.worktrees"
-git -C "<REAL>" worktree move "<TOP>" "<REAL>/.worktrees/<name>" || { echo "STOP: move failed"; exit 1; }
-# Assert, like the normal-add path does: exit 0 alone does not prove the destination is the worktree.
-git -C "<REAL>/.worktrees/<name>" rev-parse --show-toplevel   # MUST equal that path exactly
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/worktree_resolve.py" adopt --wt "<WT>" --branch "<branch>" --base "<base>"
 ```
 
-**A non-zero move is a stop, not a soft error.** Refusals observed on git 2.55.0: a main working tree (`fatal: … is a main working tree`), a **locked** worktree (`fatal: cannot move a locked working tree`) — both 128; `git-worktree(1)` also states a worktree containing submodules cannot be moved, and the move is a rename, so a cross-device destination fails too. Not a closed set — treat any non-zero as a stop. Continuing is what makes it dangerous rather than merely failed: `<WT>` would then name a directory that does not exist, and `git -C <missing-dir> ls-remote` exits 128 with **empty stdout**, which adopt step 1 below reads as "not on the remote → safe to proceed" (verified 2026-08-05).
+Keep its `headref:` as `<HEADREF>`. rc 4 `ASK:` → nothing renamed; ask, never pick silently, then re-run with the flag:
 
-`<WT>` from here on is the definition above: `<TOP>` on 3a, the moved path on 3b (whether this run moved it or found it already there). Now the **foreign-commit check**, before renaming. A harness tree may carry unpushed commits from an *earlier* task the same session worked on; adopt step 1's `ls-remote` comes back empty for them (never pushed) and adopt step 3's rebase preserves them, so they would ride into this task's MR. Fetch first and verify the ref, or the range itself is the trap this file warns about elsewhere — an unfetched `origin/<base>` exits 128 with **empty stdout**, which reads as "no foreign commits":
+- `foreign-commits`: the `foreign:` commits (an earlier task's, unpushed) would ride into this task's MR. Report them; on the user's yes, `--foreign-ok`.
+- `old-remote`: the `claude/*` branch is pushed and may carry an MR, so a rename opens a second MR (an MR's source branch cannot be retargeted). Either close that MR and re-run with `--old-remote-ok`, or keep the old name: `<branch>` = `<HEADREF>`, no rename, and the park's rebase then needs a force-push (a CLAUDE.md gate).
+
+`next: merged-branch-path` (a tree left on another task's named branch) → read `lib/worktree-rare-paths.md` "Merged-branch path" and follow it; its `foreign:` lines are expected there. Otherwise run the one `run:` rename (after `switch -c` on a detached HEAD, a `claude/*` branch that exists but is not checked out survives: delete it by hand once adopted), then park the pending work and freshen the base — not a stash, `refs/stash` is shared by every worktree:
 
 ```bash
-git -C "<WT>" fetch origin <base> --quiet || { echo "STOP: fetch failed — a stale origin/<base> would pass the next check silently"; exit 1; }
-git -C "<WT>" rev-parse --verify --quiet "origin/<base>" >/dev/null || { echo "STOP: origin/<base> unresolved"; exit 1; }
-git -C "<WT>" log --oneline "origin/<base>..HEAD"   # non-empty → report the commits and ask before renaming
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/park_and_rebase.py" park --repo "<WT>" --base <base>
+# rc 3 → resolve, then continue WITH the hook suppression, NEVER `--skip`:
+#   git -C "<WT>" -c core.hooksPath=/dev/null rebase --continue
+# then restore — on rc 0, after a resolved rc 3, and on the rc 5 branches whose message
+#   asks for it; never on rc 2 or rc 4. Re-bind R: the `--continue` above is a separate Bash
+#   call, and an unbound R makes this exit rc 2, which reads as "refused, repo unchanged"
+#   while the park commit is in fact still at HEAD:
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/park_and_rebase.py" restore --repo "<WT>"
 ```
 
-Row 3b only: the move carries the branch, the commits, tracked modifications **and** untracked files, and deregisters the old path (verified 2026-08-04, git 2.55.0) — nothing to stash for the move itself. It succeeds even when the session's cwd is inside `<TOP>`. Afterwards the old directory is gone, so any later `git -C` on that stale literal fails loudly (`fatal: cannot change to …: No such file or directory`) — that half is safe. The silent half is the opposite: a **bare** command still works, because the shell's cwd follows the rename, while the `pwd` builtin keeps printing the old path and only `pwd -P` shows the new one (verified 2026-08-05, macOS). So a bare `git status` after a move reports the moved tree under a name that no longer exists.
+rc `0` → run `restore`; rc `3` → resolve, `--continue`, then `restore`; rc `4` → nothing to restore, skip it; rc `2` → refused, repo unchanged, **stop**; rc `5` → the repo IS changed, read the message — two of its branches leave a park at `HEAD` and ask for `restore` once you have fixed the cause. Full table: `simo-dev:commit` `lib/failure-paths.md` (step 0.5 rc 1). Read `restore`'s stderr even at rc `0` — a path it could not re-stage is named only there — and the park does not preserve the index/worktree split.
 
-Adopting — `<branch>` is the full canonical name from the top of this step, **including** the ticket segment in ticket mode. Run in this order; each step restores an invariant `git worktree add --no-track ... origin/<base>` would have given for free:
+**Shared-tree check** (a desktop-app tree; here and at step 3): `mcp__ccd_session_mgmt__get_session` with `session_id` `"self"`, and `mcp__ccd_session_mgmt__list_sessions` with `linked: true` and `limit: 200` (the default 20 can drop a row); not yet callable → `ToolSearch` `select:` once. Flags: `--self-worktree "<worktreePath>"` (`""` when absent) plus one `--linked-cwd "<cwd>"` per listed session, idle ones included (the tool already leaves out this session and archived ones); either tool unavailable → `--no-session-tools` (counts as shared: ownership cannot be shown). The user answered "adopt anyway" for this tree in this run → `--adopt-anyway`. The script compares directories with `-ef`. Evidence and blind spots: `lib/shared-tree-stop.md` "The check" — read it when a session in this tree was missed.
 
-1. **Is the old name already on the remote?** First, on a retry of step 6 after this task's own rename, step 3's `<HEADREF>` is a stale pre-rename literal; re-read it (`git -C "<WT>" rev-parse --abbrev-ref HEAD`) — equal to `<branch>` means the rename already happened: stop and report rather than re-running any adopt step unattended. Only row 3 routes here, and the harness leaves a tree either detached or on a `claude/*` branch, so `<HEADREF>` is one of those two in the fresh trees observed (2026-07-28 and 2026-08-05, 7 live trees). A third shape, observed 2026-10-20: a 3a desktop tree that post-merge left in place on **another task's named branch**, already merged, met again by a later task. Detached means there is no old branch at all — nothing can have been pushed, skip this step. A named branch that is neither `claude/*` nor `<branch>` → the **merged-branch path** below; nothing else gets a rename form. On `claude/<random>`, check before touching anything, substituting the name step 3 reported (never the literal `claude/<random>`):
-   ```bash
-   git -C "<WT>" ls-remote origin "<HEADREF>"
-   ```
-   Empty output with a **non-zero** exit is not an answer — see the move-failure note above. Non-empty → the harness branch is pushed and may already carry an MR, so renaming and pushing the new name opens a **second** MR for one change. Ask which resolution, never pick silently: close the existing MR and let `simo-dev:commit` open one on the canonical branch, or keep working under the old name. An MR's source branch **cannot** be retargeted — `glab mr update` has `--target-branch` only (glab 1.110.0) and the API rejects `source_branch` — so "just repoint it" is not an option. The freshen-the-base step below rewrites history, so once pushed the rebase also needs a force-push — a CLAUDE.md permission gate.
-
-   **Merged-branch path** (named `<HEADREF>`, neither `claude/*` nor `<branch>`). `origin/<base>` is already fresh from the foreign-commit check; all guards in one call:
-   ```bash
-   printf '%s\n' "<HEADREF>" | grep -Eq '^(feat|fix|chore|refactor|docs|test|perf)/'; echo "task-name rc=$?"  # MUST be 0
-   [ "<HEADREF>" != "<base>" ]; echo "not-base rc=$?"                                      # MUST be 0
-   git -C "<WT>" merge-base --is-ancestor HEAD "origin/<base>"; echo "ancestor rc=$?"     # MUST be 0
-   git -C "<WT>" ls-remote --exit-code origin "<branch>" >/dev/null; echo "remote rc=$?"  # MUST be 2
-   git -C "<WT>" branch --list "<branch>"                                                  # MUST print nothing
-   git -C "<WT>" status --porcelain --untracked-files=all                                  # MUST list only this run's step-7 plan/spec files
-   ```
-   The first two keep a long-lived branch (`<base>`, `develop`, a release branch) out: only a task-shaped name (this step's own `<type>/` rule — keep the regex in sync with the `<type>` list in "Branch name:" above) is renamed and later deleted. Ancestor rc 0 means the old branch has no commits of its own beyond base — it proves ancestry, not that an MR merged. A squash merge, or a rebase merge that rewrote the commits, first shows up at the foreign-commit check (non-empty `origin/<base>..HEAD`, report and ask) and then fails this guard — it stops, by design. Remote rc 2 keeps a follow-up out: an existing `origin/<branch>` is the same open gap step 7.5's pre-gate condition 1 names. The status listing catches what ancestry cannot: a previous task's leftover uncommitted or untracked files (post-merge keeps a desktop tree that holds uncommitted changes), which adopt step 3's park would otherwise carry into this task's branch; step 7's plan/spec files are expected there. Any guard failing → stop and report; the user decides, and a new session started from the repo root is the clean path. All pass:
-   ```bash
-   git -C "<WT>" switch --no-track -c "<branch>"   # from HEAD: untracked plan/spec files ride along
-   ```
-   `--no-track` because under `branch.autoSetupMerge=inherit` or `always` the new branch would otherwise track the old branch or its upstream, so a bare push would target the wrong name (reproduced on git 2.56.0, 2026-10-20). Then skip adopt step 2 (the `branch --list` guard already ran that check) and run adopt step 3 as usual (park commits the untracked plan, the rebase replays it onto `origin/<base>`). After step 3, `git -C "<WT>" branch -d "<HEADREF>"` — `-d`, not `-D`, so it refuses loudly if the old branch is not merged after all; post-merge's desktop-tree branch leaves it in place ("leaving it and branch <name> in place"), so without this it accumulates. A stop after the switch (park rc 2 or 5, or a retry that meets the stale-`<HEADREF>` stop) must say in its report that the old branch — step 3's original `<HEADREF>` literal, not the re-read one — is still to delete; if that literal is lost, name `git -C "<WT>" branch --merged "origin/<base>"` as the way to find it. Step 3's Explore and the plan ran against the old, older tree, so their citations may be stale; `simo-dev:plan-execute` step 1 "Load and review" is where that is caught.
-2. **Rename — pick exactly ONE form**, per step 3's `abbrev-ref` answer (line 3 of that call):
-   ```bash
-   # detached HEAD (`branch -m` exits 128: "cannot rename the current branch while not on any")
-   git -C "<WT>" switch -c "<branch>"
-   ```
-   ```bash
-   # on a claude/* branch — `branch -m` carries `origin/claude/<random>` over verbatim
-   # (verified 2026-07-28), so a bare `git push` would write the OLD remote name. The unset must
-   # be guarded: with no upstream configured it exits 128 ("has no upstream information"), which
-   # is the normal state whenever step 1's ls-remote came back empty.
-   git -C "<WT>" branch -m "<branch>"
-   git -C "<WT>" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1 \
-     && git -C "<WT>" branch --unset-upstream
-   ```
-   Never run both: after `switch -c`, the `branch -m` is a **silent no-op** (exit 0 — the current branch already has that name) and leaves `claude/<random>` behind as a second local branch, which `mr-followup` step 8's `branch -D <name>` never removes. A retried adopt fails on **either** form when `<branch>` already exists locally, both exit 128 (`branch -m` → "a branch named … already exists"; `switch -c` → the same) — so run `git -C "<WT>" branch --list "<branch>"` before whichever form you pick, not just before `branch -m`. And on the detached path a `claude/<random>` that exists but is not checked out survives `switch -c` regardless, so delete it by hand once adopted. Only the first `git push -u origin <branch>` may set an upstream (see `--no-track` below). The rename comes before the park below because `park` refuses on a detached HEAD (`the park commit would not land on any branch`, rc 2) — a state harness trees are routinely found in (7 live trees, 2026-07-28 and 2026-08-05, each detached or on a `claude/*` branch).
-3. **Park the pending work, freshen the base, put it back.** Adoption exists because a session was already working in here, so a dirty tree is the normal case — and `git rebase` refuses one outright (`error: cannot rebase: You have unstaged changes`). Not a stash: `refs/stash` is one stack shared by every worktree of the repo, and on a clean tree `stash -u` exits 0 having created nothing, so the `pop` takes whatever was already on top (logged in the author's own notes, §17 — worth keeping a similar log). Freshening belongs in the same step — the harness cut the branch from whatever HEAD the spawning cwd had, five different SHAs across live worktrees on one day, and a stale base makes the branch appear to revert already-merged work (incidents 2026-07-24):
-   ```bash
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-   python3 "$R/lib/park_and_rebase.py" park --repo "<WT>" --base <base>
-   # rc 3 → resolve, then continue WITH the hook suppression, NEVER `--skip`:
-   #   git -C "<WT>" -c core.hooksPath=/dev/null rebase --continue
-   # then restore — on rc 0, after a resolved rc 3, and on the rc 5 branches whose message
-   #   asks for it; never on rc 2 or rc 4. Re-bind R: the `--continue` above is a separate Bash
-   #   call, and an unbound R makes this exit rc 2, which reads as "refused, repo unchanged"
-   #   while the park commit is in fact still at HEAD:
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-   python3 "$R/lib/park_and_rebase.py" restore --repo "<WT>"
-   ```
-   `park` fetches `origin/<base>` and rebases itself, so no `merge-base --is-ancestor` conditional is left here: an already-fresh base makes its rebase a no-op. `--base` is not optional — without it `park` resolves `origin/HEAD`, and this step already knows its base. rc `0` → run `restore`; rc `3` → resolve, `--continue`, then `restore`; rc `4` → nothing to restore, skip it; rc `2` → refused, repo unchanged, **stop**; rc `5` → the repo IS changed, read the message — two of its branches leave a park at `HEAD` and ask for `restore` once you have fixed the cause. Full table: `simo-dev:commit` step 0.5. Read `restore`'s stderr even at rc `0` — a path it could not re-stage is named only there — and the park does not preserve the index/worktree split.
-
-Report one line: final path + new branch name, and whether it was moved (3b) or adopted where it stood (3a always). Adding a second worktree instead is what produced two branches, two MRs and one piece of work for the same change (`!35` closed by hand against `!36`; `!20` and `!21` same title). `.claude/worktrees/` is excluded via `.git/info/exclude` — local and uncommitted, so a worktree adopted in place shows up untracked in the main checkout on a fresh clone; add the exclusion there if that happens. A moved one lands in `.worktrees/` — ensure that is gitignored in `<REAL>`, same as the normal-add path does, rather than assuming it (this repo's `.gitignore` carries a `.worktrees/` entry; other repos need not).
-
-**Fetch base first, branch from `origin/<base>`** (not the possibly-stale local ref): `git fetch origin <base> --quiet` then `git worktree add --no-track <repo>/.worktrees/<name> -b <branch> origin/<base>`. A stale local base makes the branch appear to revert already-merged work (incidents 2026-07-24); this removes the stale-at-creation case. Later drift — a concurrent pull, or the remote simply advancing mid-session — is the base-freshness guard's job: per task in `simo-dev:plan-execute` when the work runs from a plan, and in `simo-dev:commit` step 0.5 before every commit.
-
-`--no-track` is mandatory: without it git tracks `origin/<base>`, giving the branch an upstream that points at **master** before it exists on the remote — a bare `git push` then targets the base under `push.default=upstream`. Keep the upstream meaningful (set only by the first `git push -u origin <branch>`); never read it as "already pushed" regardless — see `simo-dev:commit` step 5.
-
-**Follow-up on an EXISTING branch/MR — re-verify right before creating the worktree** (idempotent; the step-3 pre-flight ran too early — the race is mid-intake). A concurrent merge can delete the target branch between the first observation and now. Check the **remote** branch — it is authoritative for a live MR, and a merged MR's local `refs/heads/<branch>` can survive a remote delete (`fetch --prune` never removes local branches):
-
-```bash
-git ls-remote --exit-code origin "<branch>"   # exit 2 → remote branch gone
-```
-
-- Gone → MR merged/closed mid-intake: **pivot to a fresh branch off base** (new MR, the `--no-track ... -b <branch> origin/<base>` form above), do NOT fold onto the dead branch. `git -C <pruned-dir>` silently resolves to the parent repo, so a `git worktree add` failing on the missing ref — not the toplevel assert below — is the only signal without this check. Target code already read from a pre-pivot snapshot of the dead branch → re-read it from the real base after the pivot.
-- Live → fetch first, then create the worktree on the existing branch: `git fetch origin <branch> --quiet && git worktree add <repo>/.worktrees/<name> <branch>` (no `-b`, not the new-branch form above). `ls-remote` checked existence, not freshness — a stale local `<branch>` lags the MR head after concurrent pushes, so fast-forward it to `origin/<branch>` before working.
-
-If the worktree's plan (`docs/plans/...`) has a `Depends on: <TICKET>` field, resuming this branch/worktree is not enough on its own — a stale worktree can still compile after its dependency merged with a different shape (incident 2026-08-05). That verification runs in `simo-dev:plan-execute` step 1, not here; a green build is not proof the dependency is current.
-
-Assert before any edit/test/commit (`<WT>` per the definition above — `.worktrees/<name>` on rows 1/2/3b, `<TOP>` on 3a):
+**Close** — on every row that did not stop: assert `<WT>`, mark it as in the flow (both keys: a `start_session` child runs this step but never step 1, so this is where it gets its session flag — it appends `--task-id "<task id from the prompt>"` to the `on` line, so the task keeps one ID; an orchestrator leaves it off), then bind the task to its branch. `simo-dev:mr-followup`'s post-merge cleanup clears the marker.
 
 ```bash
 git -C "<WT>" rev-parse --show-toplevel   # MUST equal <WT>
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/flow_state.py" on --session "$CLAUDE_CODE_SESSION_ID" --repo "<WT>"
+python3 "$R/lib/flow_telemetry.py" event --type task_bound --cwd "<WT>" --field ticket="<KEY-or-empty>" --field branch="<branch>" --field repo="$(basename "$(dirname "$(git -C "<WT>" rev-parse --path-format=absolute --git-common-dir)")")"
 ```
 
-On this run's own row 1 or row 2 (a normal `git worktree add`, artifacts landing elsewhere — see the table above), the calling step-8 branch already built the carry commit before invoking this procedure — cherry-pick its `<carry-sha>` into this worktree now (`lib/worktree-carry.md`'s `cherry-pick -n`/`reset --quiet` steps, right where that file's own phase-marker comment says to resume). On row 3, there is normally nothing to cherry-pick — the artifacts already live in the tree being adopted. Exception: a `start_session` child normally lands on row 3 from its own perspective, whatever its orchestrator's own row was — and has also started in the main checkout itself (row 1, observed 2026-10-01). If that orchestrator's row was 1/2, it built a carry commit and passed `<carry-sha>` in the spawn prompt, and the child must still cherry-pick it into its own `<WT>` on whatever row it continues on (`lib/handoff-spawn.md`'s own instruction). "Nothing to cherry-pick" means no `<carry-sha>` was supplied, not merely "this run resolved to row 3."
+On this run's own row 1 or row 2, the calling step-8 branch already built the carry commit: cherry-pick its `<carry-sha>` into `<WT>` now (`lib/worktree-carry.md`'s `cherry-pick -n`/`reset --quiet` steps, at that file's phase-marker comment). On row 3 the artifacts already live in the adopted tree — except in a `start_session` child given a `<carry-sha>` (its orchestrator was on row 1/2; the child itself can land on any row, row 1 included): it cherry-picks into its own `<WT>` whatever row it continues on (`lib/handoff-spawn.md`). "Nothing to cherry-pick" means no `<carry-sha>` was supplied.
 
-> Carry commands + full EnterWorktree ban rationale: `lib/worktree-carry.md` — load when creating a worktree or carrying artifacts.
+Report one line: `<WT>` + `<branch>`, and whether the tree was moved (3b) or adopted where it stood (3a). A main checkout listing an adopted 3a tree as untracked: `lib/worktree-rare-paths.md` "Untracked `.claude/worktrees/` in the main checkout".
 
 ### 7. Detailed plan
 
-If step 4c's `Choices made:` list came back empty (the same condition step 4c itself already uses to decide whether to print that list at all — no new judgment introduced here), skip invoking `simo-dev:plan-write` and write the plan file directly instead, at the same path convention documented below (`docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md`; no ticket → drop the key segment).
+If step 4c's `Choices made:` list came back empty (the same condition step 4c itself already uses to decide whether to print that list at all — no new judgment introduced here), skip the writer subagent and write the plan file directly instead, at the same path convention documented below (`docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md`; no ticket → drop the key segment).
 
 The directly-written file must contain:
 - A Goal line, taken from step 3's 1-line gist.
@@ -412,123 +315,127 @@ This is the minimum shape `simo-dev:plan-execute` already knows how to consume �
 
 Otherwise (the list is non-empty — the default, and the only path before this fork):
 
-Invoke `simo-dev:plan-write` (on the current checkout — no worktree exists yet; step 6 runs later, from step 8) with the gathered context. Plan path: `docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md` (no ticket → drop the key segment). Create `docs/plans/` if missing.
+A **writer subagent** writes the plan, so its code reading and the plan text never enter this session, which every later step re-reads. This session keeps the brief, the dispatches, the critique and the gate (step 7.5). Plan path: `docs/plans/YYYY-MM-DD-<jira-key-lowercase>-<short-desc>.md` (no ticket → drop the key segment), on the current checkout — no worktree exists yet; step 6 runs later, from step 8.
+
+**Brief.** Create its folder once per run, `mktemp -d "${TMPDIR:-/tmp}/claude_plan-brief.XXXXXX"` (`<brief-dir>`, its printed absolute path), and Write `<brief-dir>/brief.md`. The writer knows only this file, so anything left out is lost:
+- ticket key and summary (or "no ticket"), task type, the repo's absolute path, the plan path, `<base>` when known;
+- the approved direction: step 4c's bullets and `Choices made:` copied as shown, plus every `redirect` reason folded in since;
+- requirements: the ticket's acceptance criteria, or those step 4.5 wrote back;
+- step 3's summary, the personal-reference facts (described, never literal secrets) and the `CONTEXT.md` terms;
+- the Explore findings as paths with an identifying string each (files to change, patterns, utilities and tests to reuse), never pasted code: the writer reads the code itself;
+- the grill-me outcome, when one ran: decisions mode → the resolved decisions, numbered, each with the rejected alternative and why in one line; design mode → the approved spec's path (and the mockup's), named as authoritative;
+- the user's constraints and preferences from this conversation, quoted in their own words, not paraphrased; what was declared out of scope; In-scope improvements already known (`docs/canonical-flow.md` "In-scope improvements").
+
+**Dispatch.** One `Agent` call: `subagent_type: simo-dev:plan-writer` (not listed → the default type, same prompt), `run_in_background: false`, no `model` (it inherits this session's). The prompt carries: an ownership line (the writer owns the plan file and its report); the brief's and the plan's absolute paths and the repo's; "load `simo-dev:plan-write` with the Skill tool and follow it; its Report section is your final message"; never commit, never ask the user, never dispatch an `Agent`, invoke no other flow skill; and the line "Write throwaway files only under a fresh `mktemp -d /tmp/claude_<slug>.XXXXXX` of your own; never write into or overwrite files in the Scratchpad directory your environment lists — it belongs to the caller's session." verbatim. Keep its agent id: steps 7.5 and `lib/gate-critique.md` resume it.
+
+**Resume** (here, in step 7.5 and in `lib/gate-critique.md`): `SendMessage` to the writer's agent id, carrying the items to apply (when not callable, `ToolSearch` `select:SendMessage` once first). `SendMessage` returns at once with a `resumed … in the background` acknowledgement, not the report: wait for the task notification, and read that report as below. `SendMessage` unavailable → a fresh dispatch with the same prompt plus "the plan already exists at <plan path>: read it, apply only the items below, do not rewrite it" and the items; its agent id replaces the old one.
+
+**Report.** Read the `status:` line:
+- `DONE` → step 7.5 (or back to the step that resumed it), with the report's `assumptions:` and `rejected:` lines.
+- `BLOCKED` → ask the user the decision it names (`simo-dev:afk` answers it itself); add the answer to the brief and **Resume** with it, then this item again.
+- No `status:` line (a cut or failed turn) → **Resume** with "end with your Report" as the only item, once; still none → a fresh dispatch as in **Resume**.
+
+Never Read the plan file in this session while a writer owns it, from step 7's dispatch to the gate's approving exit: the summary comes from `lib/plan_summary.py` (step 7.5), changes go through the writer. After that exit the plan is this session's again (`simo-dev:plan-execute`, `simo-dev:review-loop`'s plan drift).
 
 ### 7.5. Plan review gate (always-on)
 
-Second structural check-point — last chance before implementation. **Read the plan file from disk first** (always — subagent-authored plans never reached this context). Then run the base-freshness check against the plan's declared files — once, synchronously, right here; not repeated later in this same gate loop (an `edit`/`restart` round-trip re-runs it naturally next time this step executes from the top):
+Second structural check-point — last chance before implementation. This step never reads the plan file: the summary comes from `lib/plan_summary.py`, run after the critique below (and again after any edit), so it shows the post-fix plan. First run the base-freshness check against the plan's declared files — once, synchronously, right here; not repeated later in this same gate loop (an `edit`/`apply and re-present`/`restart` round-trip re-runs it naturally next time this step executes from the top):
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/check_base_freshness.py" --repo "<repo>" --plan-files
 ```
-This still compares the local `<base>` against `origin/<base>`, not against `HEAD` — a stale local base still surfaces a real overlap here exactly as before; only the worktree-local divergence this same check would also catch after step 6 runs is no longer available at this point (that guard now runs per-task/per-commit instead, in `plan-execute` and `commit` step 0.5, unaffected by this change).
+It answers a file-overlap question (local `<base>` vs `origin/<base>`, on the plan's files), not citation staleness: what it cannot see here is checked later, in `plan-execute` step 1 and per task/commit (`lib/plan-gate-rare.md` "Freshness check scope").
 
-rc 0/rc 2 here answers a file-overlap question, not a citation-staleness one: the base can advance on exactly the files the plan cites between this gate and step 8's actual worktree creation, with no worktree yet for the guard to see, and once that worktree does fork from the already-advanced base there is no overlap left to detect — the plan's own line numbers or "current behavior" claims can still be stale even though every later run of this same check reports rc 0. This gate cannot close that: the fix is at the point the worktree's own files become readable — see `plan-execute` step 1's "Load and review".
-
-- rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks/verification.
+- rc 1 → fold the printed overlap (the overlapping file paths — `analyze()` returns no commit data) into the Plan summary below, under a `⚠ Base advanced` heading, right after Risks.
 - rc 0 or rc 2 → no change to the summary, except `⚠ Plan files` below.
-- Any rc: stderr lines naming a `docs/plans/...` file with a placeholder **Files:** path → fold them into the Plan summary under a `⚠ Plan files` heading, after `⚠ Base advanced` when present, else after Risks/verification. Only a line naming the plan under review asks for a fix here; one naming another session's plan is listed for information.
+- Any rc: stderr lines naming a `docs/plans/...` file with a placeholder **Files:** path → fold them into the Plan summary under a `⚠ Plan files` heading, after `⚠ Base advanced` when present, else after Risks (or Files touched when none). Only a line naming the plan under review asks for a fix here; one naming another session's plan is listed for information.
 
-If this plan file came from step 7's bare-plan fork (step 4c's `Choices made:` list came back empty), skip this model lookup and the dispatch below entirely — treat it exactly like the `PLAN_CRITIQUE_MODEL` empty case: no model lookup, no `plan-reviewer` `Agent` dispatch, no autofix rounds. Nothing was generated here to critique, only a restatement of material already confirmed earlier in the flow. Otherwise, read the `plan_critique` model config — defaults to `sonnet` when unconfigured; set the sentinel value `none` (`model_strategy.py set plan_critique none`) to disable automatic plan critique entirely:
+A fast-path plan follows `lib/fast-path.md`'s critique rule (at most one round, only with a `risk:` line) instead of the rounds below. A plan from step 7's writer is critiqued here, on its first entry and on every re-entry after `edit` or `apply and re-present`; its fixes go back to the writer (`lib/gate-critique.md`). If this plan file came from step 7's bare-plan fork (step 4c's `Choices made:` list came back empty), skip this model lookup and the dispatch below entirely — treat it exactly like the `PLAN_CRITIQUE_MODEL` empty case: no model lookup, no `plan-reviewer` `Agent` dispatch, no autofix rounds. Nothing was generated here to critique, only a restatement of material already confirmed earlier in the flow; a design decision it turns out to have missed → `lib/plan-gate-rare.md` "Bare plan: escape hatch". Otherwise (a writer's plan, or a fast-path plan whose `risk:` line asks for its round) read `lib/gate-critique.md` and follow it: the `plan_critique` model lookup (`none` disables critique), the `plan-reviewer` dispatch, the objective autofix rounds under the `Critique rounds` cap, and the **gate findings set** (every unapplied `→ decide:` finding, deduped by location and message) that the summary, the apply options and the `Recommended:` line below use.
+
+**Derive the branch name now, before the pre-gate check below needs it.** `<type>/<jira-key-lowercase>-<short-desc>` (or `<type>/<short-desc>` without a ticket) — step 6's own naming rule (see its heading), a pure string computation from context already gathered by steps 1–5 (task type, ticket key, a short slug), needing no git operation and no worktree. Step 6 (whichever row it resolves to) and everything below in this step consume this exact string rather than re-deriving it.
+
+**Pre-gate eligibility check — run before this gate's spawn option is decided.** `<row>` and `<submodule>` = step 3's `row:` and `submodule:` literals:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-PLAN_CRITIQUE_MODEL=$(python3 "$R/lib/model_strategy.py" get plan_critique)
-if [ "$PLAN_CRITIQUE_MODEL" = "none" ]; then
-  PLAN_CRITIQUE_MODEL=""
-elif [ -z "$PLAN_CRITIQUE_MODEL" ]; then
-  PLAN_CRITIQUE_MODEL="sonnet"
-fi
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/plan_gate_precheck.py" --repo "<repo>" --branch "<branch>" --row "<row>" --submodule "<submodule>"
+python3 "$R/lib/gate_reminder.py" arm --label "<label> plan gate"
 ```
 
-Empty (only reached via the explicit `none` sentinel now, or a bare plan per above) → no dispatch. Non-empty → dispatch an `Agent` with `subagent_type: simo-dev:plan-reviewer`, `model: $PLAN_CRITIQUE_MODEL`, `run_in_background: false` (same reasoning as `code-review-protocol` item 2: the gate must see the findings before the user is asked to proceed) — prompt = the plan file content just read from disk plus the gathered context already available at this step. Parse the response's findings in the same `[severity] location — message` line format `code-reviewer` findings use elsewhere in this plugin.
+`bypass: none` → record no bypass: row 1 (not a submodule) and row 2 are the only rows this gate's `start_session` option is offered for. Anything else (a branch that already exists on origin, rows 3s/3a/3b/4, a submodule; why each one: `lib/plan-gate-rare.md` "Bypass conditions") → record the bypass verdict as printed, to be announced once, by the gate below, not here. Either way the lettered gate below still runs — a bypass verdict only ever changes what an approving option (`proceed` / `apply and proceed`) routes to afterward: a bypass plan goes straight to step 8's In-session row once approved, and the gate hides its `proceed in a new session` option.
 
-There is no runtime reviewer here to auto-escalate on evidence, unlike `review-loop`'s high/critical-finding restore (rationale: `docs/specs/2026-09-11-task-intake-bare-plan-design.md`, "Escape hatch"). If `simo-dev:plan-execute` or the user (at this gate's `edit`) surfaces a real design decision the bare-plan file didn't anticipate, the correction is manual: stop, mark the bare-plan file superseded rather than silently overwriting it, and invoke `simo-dev:grill-me` or `simo-dev:plan-write` properly from there.
+**Gate reminder.** The `gate_reminder.py` line rides in the same Bash call as the check above — never a call of its own, which would cost one more request on the full context. Skipped under `simo-dev:afk`, which answers this gate itself: drop that line.
 
-**Auto-apply objective findings, before the gate is shown.** Classify each parsed finding:
+`<label>` is the ticket key, else the branch's `<short-desc>` slug: never free text, which the shell would expand.
 
-- **Objective** — severity `critical`/`high`/`medium` AND the finding names a mechanically verifiable plan defect: a wrong anchor/reference, a non-executable command, a dead/unused variable, an empty assertion, and similar. Fix it with a targeted `Edit` to the plan file, right here — do not wait for an `edit` at the gate below, and never a full `plan-write` regeneration for these (that scope belongs to judgment findings, where the human sees and approves the resulting diff).
-- **Judgment** — anything else: severity `low`, or the finding argues for an alternative direction, scope, or design choice, or otherwise needs the user's own decision rather than a mechanical fix. This escape hatch overrides severity — a `critical`- or `medium`-tagged design objection is still judgment, never auto-applied. Judgment findings wait for the user at the gate, unchanged from today.
-
-Round 1 is the initial dispatch just above. After applying a round's objective fixes, re-read the plan file from disk (never the pre-fix content still sitting in context) and re-dispatch `plan-reviewer` on it — same model, same call shape, prompt built the same way as round 1: from the freshly re-read file, not from memory. Repeat classify → autofix → re-review for up to 3 rounds total. On round 3, stop auto-applying: any remaining objective findings fall through to the gate as judgment findings instead, tagged `(autofix cap reached)` in the `⚠ Plan critique` list — this bounds the loop if the reviewer keeps surfacing new objective findings every round.
-
-Carry judgment findings forward cumulatively across rounds — each re-dispatch is a stateless call with no memory of earlier rounds, so a judgment finding from round 1 that round 2's dispatch doesn't re-surface (new objective findings crowding it out, or plain non-determinism) must still reach the gate. Keep a **gate findings set**: every judgment finding seen across all rounds, deduped by the **(location, message) pair** — never by location alone, since a location is a single string (a task or a file reference) and `plan-reviewer`'s independent check categories can legitimately raise two distinct findings against the same one — plus (round 3 only) any objective findings the cap pushed there. On a genuine (location, message) match across rounds, keep the `(autofix cap reached)` tag if any colliding occurrence carries it — a merge must never silently drop it. Exact-string match only: a differently-worded restatement of the same finding across rounds is not deduped by this rule and can surface as a separate entry — accepted, to keep the check simple. This set — not any single round's raw output — is what both the `⚠ Plan critique` list below and the `Recommended: edit` count reference.
-
-If any autofix round ran above, re-read the plan file from disk again — the summary below must reflect the post-autofix content, never the pre-fix version still sitting in context.
-
-**Derive the branch name now, before the pre-gate check below needs it.** `<type>/<jira-key-lowercase>-<short-desc>` (or `<type>/<short-desc>` without a ticket) — step 6's own naming rule (see its heading), a pure string computation from context already gathered by steps 1–5 (task type, ticket key, a short slug), needing no git operation and no worktree. This changes *when* the name is decided, not step 6's own naming rule — step 6 itself (whichever row it resolves to, once it runs) consumes this exact string rather than re-deriving it, and so does everything below in this step, including the pre-gate check.
-
-**Pre-gate eligibility check — run before this gate's spawn option is decided.** Three conditions, each forcing step 8's In-session row, whatever step 7.5's gate below would otherwise offer:
-
-1. **Follow-up on an existing branch.** Check whether this run's target branch (the name just derived above) already exists remotely — `git ls-remote --exit-code origin "<branch>"` (the same check step 6's own "Follow-up on an EXISTING branch/MR" section already does; exit 2 → branch doesn't exist, this is a new branch — condition does not fire). Exists (any other exit/non-empty output) → `start_session` has no working path for a follow-up (row 3's adopt-rename step only renames onto a name that doesn't already exist elsewhere — a pre-existing gap in step 6, not fixed here).
-2. **This session is itself already sitting in a linked worktree that step 6's own table would resolve to row 3 or row 4** (reuse step 3's pre-flight literals already computed earlier this run — the same table `### 6. Branch and worktree` documents: harness path → row 3a/3b; anything else linked and non-canonical → row 4). On row 3a/3b, this session's own uncommitted artifacts live inside a tree step 6 is about to rename (3a) or move and rename (3b) — there is no separate base-branch state to hand a spawned child, and no clean way to build a carry commit from a typically-detached HEAD (`worktree-carry.md`'s own first command, `symbolic-ref --short HEAD`, would refuse). Row 4 stops regardless of hand-off path.
-3. **This session is a submodule working tree** — row 1 (line 4 == line 5) with step 3's line 5 containing a `/.git/modules/` segment (test line 5, not `<REAL>`: for a one-segment submodule name `<REAL>` is `<super>/.git/modules`, no trailing slash). A child spawned from here lands under the submodule, its `<REAL>` is a `.git/modules/**` path that fails step 6's `<REAL>` assert, and it stops after this session already built the carry.
-
-**Row 1 (a main checkout, not a submodule) and row 2 are the only rows this gate's `start_session` option is offered for.**
-
-Any condition → record a bypass verdict (which one fired), to be announced once, by the gate below, not here. No condition → record no bypass. Either way, step 7.5's `y`/`edit`/`restart` gate below still runs — a bypass verdict only ever changes what `y` routes to afterward: a bypass plan goes straight to step 8's In-session row once approved, skipping the profile/mode table entirely; a non-bypass plan's routing depends on whether the hand-off signal fires (checked next, below).
+A printed `Gate reminder set: answer by ~HH:MM …` line means a detached watcher sends one desktop notification about 15 minutes before this session's prompt cache expires, unless the user writes first: an answer that lands after the expiry rewrites the whole context. Show that line, in the session language, right above the `Recommended:` line. Nothing printed → no line.
 
 Then show:
 
 - Clickable absolute path; 1-line gist + ticket key + branch.
-- **Plan summary** from the file just read (never memory): Goal (header line), `Bare plan (no open design decisions — plan-write/plan-reviewer skipped)` (only when this plan file came from step 7's bare-plan fork — the auditability equivalent of `review-loop`'s "announce the cap value" rule: the shortcut must always be visible in the transcript, never silent), Approach (2-3 bullets from Architecture; omit for a bare plan — it has no Architecture section), Tasks (one line per `### Task N:`), Files touched (deduped), Risks/verification (omit if absent), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `⚠ Plan files` (only when the check printed placeholder lines — one per flagged plan), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was auto-applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message`, `(autofix cap reached)` findings included). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that, cap it to 8 lines and add a trailing `+<n> more (see plan file)` line instead of dropping entries silently.
+- **Plan summary** from `lib/plan_summary.py`'s output, run on the plan as it stands after the critique (never from memory, never by reading the plan):
+  ```bash
+  R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+  python3 "$R/lib/plan_summary.py" "<plan-abs-path>"
+  ```
+  Shown in this order: Goal, `Bare plan (no open design decisions — plan-writer/plan-reviewer skipped)` (only when this plan file came from step 7's bare-plan fork: the shortcut must always be visible in the transcript), Approach (absent for a bare plan — it has no Architecture line), Tasks, Files touched, Risks (when printed), `⚠ Base advanced` (only on rc 1 above — the overlapping file paths), `⚠ Plan files` (only when the check printed placeholder lines — one per flagged plan), `⚠ Writer assumptions` (the latest writer report's `assumptions:` lines, when not `none` — choices the brief did not settle), `⚠ Writer rejected` (every `rejected:` line from this gate pass's writer reports — a finding the writer judged wrong and did not apply), `✓ Plan critique auto-fixed` (only when ≥1 objective finding was applied above — one line per round, `<n> objective finding(s) fixed`), `⚠ Plan critique` (only when the gate findings set above is non-empty — list each as `[severity] location — message → fix:/decide: …` with its tail, so the user sees what an apply option would apply), and `Critique rounds: <used>/<cap>` (only for a plan whose header carries `Critique rounds`; omit it for a bare plan or a fast-path plan). Cap ~25 lines for the summary as a whole; if the `⚠ Plan critique` list alone would blow that → `lib/plan-gate-rare.md` "Summary overflow".
 
-Path + gist + summary MUST be visible markdown in the chat reply BEFORE the gate prompt — unlike 4c, AskUserQuestion IS allowed here, but only in the same turn AFTER the text block (widget fields truncate; never their only carrier). Multiple plan files → one summary block each, single gate.
+Path + gist + summary MUST be visible markdown in the chat reply BEFORE the gate prompt. Do NOT use AskUserQuestion for this gate either, same as 4c: the widget holds at most 4 options and has no `y = <letter>` mapping. Multiple plan files → one summary block each, single gate.
 
-On rc 1 above, print immediately above the gate prompt: `Recommended: restart — base advanced on file(s) this plan also targets.` (mirroring the `Recommended path:` line style at step 4b-bis). On rc 0 or rc 2, no such line — the gate looks as it does today apart from any `⚠ Plan files` summary entry, which adds no `Recommended:` line of its own.
+**Option visibility.** No gate findings, or no finding with a recommended option → omit both apply options (`apply and proceed`, `apply and re-present`). Any decide finding with no recommendation → omit `apply and proceed` (`apply and re-present` stays). A bypass verdict, or `mcp__ccd_session__start_session` absent from this session's tools (neither callable nor listed as deferred; no `ToolSearch` needed to tell) → omit `proceed in a new session`.
 
-When the gate findings set above is non-empty, print a second line immediately above the gate prompt: `Recommended: edit — <n> finding(s) from plan critique.` (`<n>` = the gate findings set's size) — on its own line. When `plan_critique` is explicitly disabled (set to `none`), or the gate findings set is empty, no such line prints — this holds even if earlier rounds auto-fixed objective findings, since those no longer need an `edit`. The three `Recommended:` lines are independent and any subset can print together, always in this order when more than one fires: `restart`, then `edit`, then `start_session`.
+**Recommended priority table** — exactly one line, `Recommended: <letter> — <why>`, printed immediately above the gate prompt; first match wins:
 
-The "Tasks" and "Files touched" bullets above already produce a task count and a deduped file count for the plan just read — reuse those two counts here, do not recompute them. A plan is "large" when its task count is greater than 5, or its file count is greater than 8.
+| # | Condition | Recommended |
+|---|---|---|
+| 1 | base advanced (rc 1 above) | `restart` |
+| 2 | no gate findings | `proceed` |
+| 3 | every finding has a recommended option, none `high`/`critical` | `apply and proceed` |
+| 4 | every finding has one, some `high`/`critical` | `apply and re-present` |
+| 5 | some findings have one | `apply and re-present` |
+| 6 | none has one | `edit` |
 
-The hand-off signal reuses these same two counts (do not recompute them) and fires when EITHER holds: task count > 5 or file count > 8 (the same "large" test above); OR this session escalated to `simo-dev:grill-me` in **design mode** (not decisions mode) earlier in this task-intake run — a fact this session already knows about itself, nothing to compute or persist. When the count/grill-me part holds and `mcp__ccd_session__start_session` is not yet callable (listed only as deferred, or not listed at all), run `ToolSearch` `select:mcp__ccd_session__start_session` once first — never skip that load because the name is unlisted, or Shape B silently never shows. No schema back, or no `ToolSearch` tool → not available: treat the signal as not fired, regardless of the count/grill-me check.
+`proceed in a new session` is never recommended (execution and review already run in subagents; a hand-off child adds its turn-end notes here). The `<why>` names the reason (base overlap, `<n>` finding(s), the severity).
 
-**Shape selection** (computed silently, never shown to the user as branching logic): Shape B fires when the hand-off signal (above) is present AND the bypass verdict (from the pre-gate eligibility check above) is absent. Shape A fires in every other case (bypass present, regardless of signal; or signal absent).
+The "Tasks" and "Files touched" counts printed by `plan_summary.py` give the plan's size — reuse them, do not recompute. A plan is "large" when its task count is greater than 5, or its file count is greater than 8; when it is, fold `plan has <n> tasks across <m> files` into the `<why>` — never a separate line.
 
-**Shape A** (bypass, or no signal): if the bypass verdict is present, print the one-line announcement of which condition fired — this is the **only** place this announcement is printed (the pre-gate eligibility check above records the verdict silently and explicitly defers the announcement to here; do not print it twice). Then show:
+If the bypass verdict is present, print the one-line announcement of which condition fired — the **only** place it is printed. Then show:
 
 > "Plan written to `<path>`. Review it:
-> - **`y`** — proceed to hand-off (step 8).
-> - **`edit <feedback>`** — apply changes, re-present this gate.
-> - **`restart`** — back to step 4; editing won't fix it."
+> - **a. `proceed`** — approve, continue in this session (step 8).
+> - **b. `apply and proceed`** — apply every finding's `fix:` or recommended option, then continue in this session.
+> - **c. `apply and re-present`** — apply the same edits, re-run critique (only while rounds remain under `Critique rounds`; after that, no new critique), show this gate again.
+> - **d. `edit <feedback>`** — change the plan per your feedback, re-present this gate.
+> - **e. `restart`** — back to step 4; editing won't fix it.
+> - **f. `proceed in a new session`** — approve as is, hand off to a fresh session (start_session, rooted at the repo root — the child stays linked, and this session is archivable only as `lib/handoff-spawn.md` **Keep the child linked** says).
+>
+> `[y = <letter> / a–<last>]`"
 
-On `y`: hand-off routing is `bypass` if the bypass verdict was present, else `table-pick`. This text is byte-for-byte the original gate blockquote — Shape A is what the gate has always looked like; nothing about its wording changes, only what `y` now silently routes to.
+Letters are assigned over the options actually shown, in the listed order; `y` takes the `Recommended:` letter. `edit` is answered as `<letter> <feedback>` or `edit <feedback>`; `y` on a recommended `edit` asks for the feedback before acting.
 
-**Shape B** (signal fired, no bypass, start_session callable, after the load above if one ran): print `Recommended: start_session — <reason(s)>` immediately above the gate blockquote and immediately below `Recommended: restart` / `Recommended: edit` (whichever of those two are present — there is no `Suggestion:` line to order against anymore, per Step 0). `<reason(s)>` = `plan has <n> tasks across <m> files` when only the large-plan signal fired, `this session ran grill-me (design mode)` when only that signal fired, or both joined with `and` when both fired. Then show:
+Hand-off routing: `spawn` on `proceed in a new session`; `in-session` on `proceed` and `apply and proceed`.
 
-> "Plan written to `<path>`. Review it:
-> - **`y`** — approve, hand off to a fresh session (start_session, rooted at the repo root — this session can be archived).
-> - **`n`** — approve, continue in-session with worktree discipline.
-> - **`edit <feedback>`** — apply changes, re-present this gate.
-> - **`restart`** — back to step 4; editing won't fix it."
+Every plan change at this gate goes through the writer when step 7 dispatched one (a bare or fast-path plan: targeted `Edit`s here, since this session wrote it): step 7's **Resume** carrying the items, and read its report — its `rejected:` lines join `⚠ Writer rejected`, its `assumptions:` replace `⚠ Writer assumptions`. `apply and proceed` → one item per gate finding that has a recommended option (its `fix:` text or that option); `(no recommendation)` findings are left for the next pass; re-run `plan_summary.py` (its output feeds the plan comment below). A report with any `rejected:` line → the user approved something the plan does not carry: show this gate again with those lines (no new critique round), never exit. Otherwise route as `proceed`. `apply and re-present`, `edit` or `restart` → `lib/plan-gate-rare.md` "Loop-back answers".
 
-Hand-off routing: `spawn` on `y`, `in-session-declined` on `n`.
-
-On `edit` → re-invoke plan-write (or targeted Edit) and loop back — the top of step 7.5 re-runs, so the bypass check and the hand-off-signal computation above are recomputed fresh next time through, and the shape shown may differ on the next pass. On `restart` → discard the plan, ask: restart from direction (step 4, reuse analysis) or analysis (step 3, re-dispatch Explore)? A `Recommended:` line above is a recommendation, not a block — approving (`y` in Shape A; `y` or `n` in Shape B) still proceeds to hand-off regardless of what was recommended. Gate exits on any approving answer for the shape shown — never on `edit` or `restart`, which loop back instead. Once the gate exits on an approving answer: post a plan comment, same mechanism as step 5.5 — unconditional on which approving answer was given (`y` alone in Shape A; `y` or `n` in Shape B). Body = the "Plan summary" block already built for the gate prompt (goal, approach, tasks, files touched, risks/verification) — never the raw plan file, which can run long; the summary is already the right size for a ticket comment. Write it to a temp file, then the same `R`-bound call as step 5.5:
+The `Recommended:` line is a recommendation, not a block — picking any approving option hands off regardless of what was recommended; `y` only means "take the Recommended letter". Gate exits on any approving option — never on `edit`, `apply and re-present` or `restart`, which loop back instead. Once the gate exits on an approving option: post a plan comment, same mechanism as step 5.5 — unconditional on which approving option was picked. Body = the "Plan summary" block already built for the gate prompt (goal, approach, tasks, files touched, risks) — never the raw plan file. Write it to a temp file, then post it with step 5.5's call and record the approving option as a flow event, in one call (`<answer>` = the option's own name, hyphenated: `proceed`, `apply-and-proceed`, `proceed-in-a-new-session`, …):
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/post_tracker_comment.py" "<KEY-or-empty>" "<tmpfile>"
+python3 "$R/lib/flow_telemetry.py" event --type gate --field skill=simo-dev:task-intake --field gate=plan --field answer=<answer>
 ```
 
-Announce `Plan: <script's stdout line>`.
+Announce `Plan: <post_tracker_comment.py's stdout line>`.
 
 ### 8. Hand-off
 
 Discipline: `simo-dev:tdd` (default for feature/fix) + `simo-dev:debug` on unexpected red.
 
-The hand-off routing was already decided at step 7.5's gate: `spawn` → the `start_session` row below, directly. `in-session-declined` or `bypass` → the `In-session worktree` row below, directly (never the table, for either of these two). `table-pick` → the profile/mode table below still makes its own silent pick, exactly as today — no question asked here.
+The hand-off routing was already decided at step 7.5's gate: `in-session` → the In-session worktree row below; `spawn` → the start_session row below. No question asked here.
 
-| Profile | Mode |
-|---|---|
-| Plan-only / single edit / exploration | **In-session** with worktree discipline |
-| Multi-step / verbose / context-heavy | **`start_session`**, rooted at the repo root (preferred) |
-| Independent parallel sub-investigations | **parallel `Agent`** calls, not spawn |
-
-- **In-session worktree**: classify against step 6's own table *conditions only* (no action yet) — reuse step 3's pre-flight literals already computed earlier this run. On a row 1 or row 2 classification, build the carry commit first (`lib/worktree-carry.md`'s mechanism, `<repo>` = step 3's own `<TOP>` — equal to `<REAL>` on a main checkout, not on a submodule — through the `<pre-sha>`/`<carry-sha>` capture and the `switch` back, stopping at that file's own phase-marker comment). Then run step 6's own procedure in full (whichever row it resolves to — this reclassification is authoritative, the one above was only to decide whether to carry first). Then — row 1/2 only — resume at `worktree-carry.md`'s `cherry-pick -n <carry-sha>` + `reset --quiet` line, into step 6's `<WT>` — on row 1/2 `<repo>/.worktrees/<name>`, `<repo>` being the toplevel on row 1 and `<REAL>` on row 2 (`<TOP>` was only row 2's carry *source*, never the destination) — step 6 itself, not this bullet, confirms the exact path. Row 3/4: skip the cherry-pick, nothing to carry. Only then continue with `simo-dev:plan-execute`; Bash cwd does NOT follow the worktree — `git -C "<worktree-abs>"` + absolute paths for everything. State the worktree path and this rule. Reached via `table-pick`: more than a couple of edits → prefer start_session (a fresh context for the implementation), where `mcp__ccd_session__start_session` is available (not yet callable → `ToolSearch` `select:mcp__ccd_session__start_session` once, never skipped because the name is unlisted) — no schema, or no `ToolSearch`, counts as not available → this row is the fallback, use it regardless of edit count. Reached via `in-session-declined` or `bypass`: the choice is already final — do not re-suggest start_session.
-- **start_session**: if `mcp__ccd_session__start_session` is available (not yet callable → `ToolSearch` `select:mcp__ccd_session__start_session` once, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available), reached either via the `spawn` routing directly (step 7.5's pre-gate eligibility check found no bypass condition, and the hand-off signal fired), or via `table-pick`'s own silent pick (never via `bypass` or `in-session-declined`, by construction — a bypass plan never reaches `start_session`, and `in-session-declined` already means the user chose not to spawn). Invoke it with `initiation` `user_asked` on the `spawn` routing (the user's `y`) or `offer` on `table-pick`. `<REAL>` is not this session's project → skip `offer` and go straight to the In-session worktree row with routing now `in-session-declined`, since the `offer` path cannot set `cwd`. On `table-pick`, the `offer` call comes **first**, before the carry commit below: one chat line naming the task (the card shows the user's latest message, here the gate's `y`), then `offer` as the only tool call in that message; Do it here → the In-session worktree row with routing now `in-session-declined` (final, never re-suggested; no carry built yet, so it builds its own); New session → continue below — and the child rooted at the repo root (`<REAL>` — the main checkout; a submodule never reaches here, step 7.5's pre-gate condition 3 routes it to In-session). On this session's own row 1/2 (same classify-only-first reuse as the In-session row), build the carry commit first, same mechanism, `<repo>` = `<TOP>`. The prompt (`lib/handoff-spawn.md`) must NOT carry this session's step 3 values — the child's location is something this session cannot predict, so the child runs step 3 itself. It only needs the branch name and `<base>`, plus — row 1/2 only — `<carry-sha>`. Print `<carry-sha>` (when built) and its one-line recovery pointer (`git -C <repo> cherry-pick -n <carry-sha>` from the base checkout) in this session's own output before spawning, so a proposal never started or a failed child doesn't leave it unrecoverable-looking. Field detail: `lib/handoff-spawn.md` — load when building the call. After the call: `user_asked` → the session is already running, this one can be archived; `offer` → once the user picks New session and the brief is sent, this one can be archived. Not available → fall back to the In-session worktree row above.
-- **Parallel agents**: `Agent` tool with `subagent_type` (each prompt carries step 3's `mktemp -d` line), for research/analysis splits, not code-writing.
+- **In-session worktree**: classify by step 3's `row:` line, already computed this run (no action yet). On a row 1 or row 2 classification, build the carry commit first (`lib/worktree-carry.md`'s mechanism, `<repo>` = step 3's own `<TOP>` — equal to `<REAL>` on a main checkout, not on a submodule — through the `<pre-sha>`/`<carry-sha>` capture and the `switch` back, stopping at that file's own phase-marker comment). Then run step 6's own procedure in full (whichever row it resolves to — this reclassification is authoritative, the one above was only to decide whether to carry first). Then — row 1/2 only — resume at `worktree-carry.md`'s `cherry-pick -n <carry-sha>` + `reset --quiet` line, into step 6's `<WT>` — on row 1/2 `<repo>/.worktrees/<name>`, `<repo>` being the toplevel on row 1 and `<REAL>` on row 2 (`<TOP>` was only row 2's carry *source*, never the destination) — step 6 itself, not this bullet, confirms the exact path. Row 3/4: skip the cherry-pick, nothing to carry (rows 3s and 4 stop inside step 6; a bare "row 3" is 3a/3b). Only then continue with `simo-dev:plan-execute`; Bash cwd does NOT follow the worktree — `git -C "<worktree-abs>"` + absolute paths for everything. State the worktree path and this rule. Never suggest start_session from here: the user chose this session at the gate.
+- **start_session**: reached only via the `spawn` routing (no bypass condition held, so this is a main checkout or row 2, never a submodule). `mcp__ccd_session__start_session` not yet callable → `ToolSearch` `select:mcp__ccd_session__start_session` once, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available → say so in one line and take the In-session worktree row. `<REAL>` is not this session's project → the same fallback (a `cwd` start needs another project's folder). Invoke it with `initiation` `user_asked` (the user picked the new session), the child rooted at the repo root (`<REAL>` — the main checkout). On this session's own row 1/2 (same classify-only-first reuse as the In-session row), build the carry commit first, same mechanism, `<repo>` = `<TOP>`. The prompt (`lib/handoff-spawn.md`) must NOT carry this session's step 3 values — the child's location is something this session cannot predict, so the child runs step 3 itself. It only needs the branch name and `<base>`, plus — row 1/2 only — `<carry-sha>`. Print `<carry-sha>` (when built) and its one-line recovery pointer (`git -C <repo> cherry-pick -n <carry-sha>` from the base checkout) in this session's own output before spawning, so a failed child doesn't leave it unrecoverable-looking. Field detail: `lib/handoff-spawn.md` — load when building the call. After the call the child is running; it stays linked, and this session is announced archivable only under `lib/handoff-spawn.md` **Keep the child linked**'s condition — archiving it can archive the child too.
 
 ## Notes
 

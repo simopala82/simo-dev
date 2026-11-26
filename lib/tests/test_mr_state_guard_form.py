@@ -46,10 +46,10 @@ full invocation out is selected and judged like a call site. That is deliberate 
 copies such a block -- but it means a doc example must be written in the canonical form or
 moved out of a fence.
 
-Scope, observed and not closed: `.md` fenced blocks and `.sh` files. `.py` is excluded
-because no Python file in the tree calls the helper as a subprocess -- the six that name
-it are the helper, its unit test, this file, `check_dependency_ticket.py` (a comment) and
-two `fetch_*.py`. A call site written in Python, or in a `.md` file outside a fence, would
+Scope, observed and not closed: `.md` fenced blocks and `.sh` files. `.py` is excluded:
+the one Python file that calls the helper as a subprocess, `lib/mr_followup.py`, is pinned
+behaviourally by `test_mr_followup.py`; the others that name it are the helper, its unit
+test, this file, `check_dependency_ticket.py` (a comment) and two `fetch_*.py`. A call site written in Python, or in a `.md` file outside a fence, would
 not be seen. The vacuity guard below is what stops that from turning into a silent pass: a
 scan that matches nothing fails.
 
@@ -85,12 +85,13 @@ RUNS_GUARD = re.compile(
     r'python3\s+"?(\$\{?G\}?|[^\s"]*' + re.escape(GUARD) + r')'
 )
 
-# Every call site must be reachable by this many assertions; three sites exist today
-# (`skills/commit/SKILL.md` step 5, and `skills/mr-followup/SKILL.md` twice -- the intake
-# state-check and the push guard in the iteration loop). A drop below three means a site
-# was renamed, deleted or moved out of scope; update this number deliberately, do not
-# lower it to make a red test green.
-MIN_CALL_SITES = 3
+# Every call site must be reachable by this many assertions; one shell site exists today
+# (`skills/commit/SKILL.md` step 5). mr-followup's two (the intake state-check and the push
+# guard of its iteration loop) moved into lib/mr_followup.py on 2026-11-26, where
+# test_mr_followup.py pins the same two tests behaviourally (missing guard, empty answer).
+# A drop below one means the site was renamed, deleted or moved out of scope; update this
+# number deliberately, do not lower it to make a red test green.
+MIN_CALL_SITES = 1
 
 
 def _scanned_files():

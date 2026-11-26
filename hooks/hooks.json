@@ -40,9 +40,15 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/base_freshness_warn.py\"",
             "timeout": 5,
             "type": "command"
-          },
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
           {
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/task_intake_warn.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/flow_session_start.py\"",
             "timeout": 5,
             "type": "command"
           }
@@ -55,6 +61,17 @@
         "hooks": [
           {
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/review_record.py\"",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/reuse_warn.py\"",
             "timeout": 5,
             "type": "command"
           }

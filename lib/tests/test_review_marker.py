@@ -1,4 +1,4 @@
-"""Tests for lib/review_marker.py (per-(repo+session) review record)."""
+"""Tests for lib/review_marker.py (per-(work tree+session) review record)."""
 import importlib.util
 import os
 import shutil
@@ -16,7 +16,7 @@ rm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rm)
 
 NOW = 1785400000
-REPO = "gitlab.example/team/repo-a"
+REPO = "/work/repo-a"
 
 
 def test_parse_valid_entry():
@@ -41,11 +41,11 @@ def test_parse_empty_session_returns_none():
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    """Isolated state file, frozen clock, stubbed repo identity."""
+    """Isolated state file, frozen clock, stubbed tree identity."""
     f = tmp_path / "review-loop"
     monkeypatch.setenv("REVIEW_MARKER_STATE_FILE", str(f))
     monkeypatch.setattr(rm, "_now", lambda: float(NOW))
-    monkeypatch.setattr(rm, "repo_id", lambda repo_path=None: REPO)
+    monkeypatch.setattr(rm, "_tree_id", lambda repo: REPO)
     return f
 
 
@@ -55,7 +55,7 @@ def tree(tmp_path):
 
     Git-backed because check() asks git to tell a tracked deletion apart from a path that
     simply does not exist; `deleted.py` is committed and then removed so the deletion case
-    exercises the same code path production takes. repo_id stays stubbed by `state`.
+    exercises the same code path production takes. _tree_id stays stubbed by `state`.
     """
     d = tmp_path / "tree"
     d.mkdir()
@@ -184,8 +184,8 @@ def test_check_skips_a_deletion_staged_with_git_rm(state, tree):
 
 
 def test_check_fails_closed_when_deletions_cannot_be_listed(state, tree, monkeypatch):
-    # repo_id() returns on its first git call and never checks for a work tree, so it succeeds
-    # on a bare repo or a .git dir where the deletion listing exits 128. Treating "cannot say"
+    # A repo with no commit yet has a work tree, so _tree_id() answers, while the deletion
+    # listing exits 128 on the unborn HEAD. Treating "cannot say"
     # as "skip" would be a fail-open in a control whose whole job is refusing false coverage —
     # and the OSError branch in check() already fails closed for an equally genuine unknown.
     monkeypatch.setattr(rm, "_tracked_deletions", lambda repo: None)
@@ -357,8 +357,8 @@ def test_commit_skill_preflight_stops_when_listing_fails(shell, tmp_path):
     r = subprocess.run([*shell, block], capture_output=True, text=True, env=env)
     assert "LISTING_FAILED rc=2" in r.stdout
     assert r.returncode == 2
-    # check() never ran: on a non-repo its only output is repo_identity's stderr exit
-    assert "repo_identity:" not in r.stderr
+    # check() never ran: on a non-repo its only output is _tree_id's stderr exit
+    assert "not inside a git work tree" not in r.stderr
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -398,6 +398,73 @@ def test_check_ignores_a_record_for_another_repo(state, tree):
     os.utime(tree / "a.py", (NOW + 60, NOW + 60))
     _write_state([("gitlab.example/team/other", "sess-1", NOW + 120)])
     assert rm.check(str(tree), "sess-1", ["a.py"]) == 1
+
+
+@pytest.fixture
+def two_trees(tmp_path, monkeypatch):
+    """A main checkout and a linked worktree of one repo, sharing one origin.
+
+    No identity stub, unlike `state`: the bug these tests pin lives in which identity a
+    record is filed under, and a stub that maps every path to one id is that bug.
+    """
+    monkeypatch.setenv("REVIEW_MARKER_STATE_FILE", str(tmp_path / "review-loop"))
+    monkeypatch.setattr(rm, "_now", lambda: float(NOW))
+    main, wt = tmp_path / "main", tmp_path / "wt"
+    main.mkdir()
+    (main / "a.py").write_text("x\n")
+    for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "T"],
+                ["remote", "add", "origin", "git@gitlab.example:team/repo-a.git"],
+                ["add", "a.py"], ["commit", "-qm", "init"], ["worktree", "add", "-q", "-b", "task", str(wt)]):
+        subprocess.run(["git", "-C", str(main), *cmd], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return main, wt
+
+
+def test_a_review_of_one_worktree_does_not_cover_a_sibling_checkout(two_trees):
+    # Observed 2026-11-10: the reviewer saw a desktop worktree's diff, the main checkout held an
+    # uncommitted edit five days older than that review, and check() on the main checkout
+    # returned rc 0 for a file no reviewer had read.
+    main, wt = two_trees
+    (main / "a.py").write_text("edited long before the review\n")
+    os.utime(main / "a.py", (NOW - 5 * 86400, NOW - 5 * 86400))
+    rm.record(str(wt), "sess-1")
+    assert rm.check(str(main), "sess-1", ["a.py"]) == 1
+
+
+def test_a_record_covers_its_own_tree_however_the_path_is_spelled(two_trees, tmp_path):
+    # The REPO: marker and the caller's --repo are typed separately: a symlinked spelling or a
+    # subdirectory of the reviewed tree must still land on the same record.
+    _, wt = two_trees
+    (wt / "sub").mkdir()
+    (tmp_path / "link").symlink_to(wt)
+    os.utime(wt / "a.py", (NOW - 60, NOW - 60))
+    rm.record(str(tmp_path / "link" / "sub"), "sess-1")
+    assert rm.check(str(wt), "sess-1", ["a.py"]) == 0
+
+
+def test_record_refuses_a_path_with_no_work_tree(tmp_path, monkeypatch):
+    # A bare repo has no tree a reviewer could have read. The repo-wide id filed one anyway,
+    # under its origin URL or, with no origin, under the bare repo's parent directory.
+    state = tmp_path / "review-loop"
+    monkeypatch.setenv("REVIEW_MARKER_STATE_FILE", str(state))
+    subprocess.run(["git", "init", "-q", "--bare", str(tmp_path / "bare.git")], check=True)
+    with pytest.raises(SystemExit) as exc:
+        rm.record(str(tmp_path / "bare.git"), "sess-1")
+    assert "not inside a git work tree" in str(exc.value.code)
+    assert not state.exists()
+
+
+def test_record_refuses_a_tree_path_that_would_split_the_store(tmp_path, monkeypatch):
+    # The store is one entry per line and _live_entries splits it with splitlines(), so a
+    # toplevel holding a line break would write a second entry naming whatever follows it.
+    state = tmp_path / "review-loop"
+    monkeypatch.setenv("REVIEW_MARKER_STATE_FILE", str(state))
+    evil = tmp_path / "x\ry"
+    subprocess.run(["git", "init", "-q", str(evil)], check=True)
+    with pytest.raises(SystemExit) as exc:
+        rm.record(str(evil), "sess-1")
+    assert "line break" in str(exc.value.code)
+    assert not state.exists()
 
 
 def test_entries_older_than_prune_window_are_dropped(state, tree):
@@ -1118,8 +1185,8 @@ def test_check_still_flags_a_stale_sibling_beside_a_version_only_bump(state, man
     assert rm.check(str(manifest_tree), "sess-1", [MANIFEST_REL, "a.py"]) == 1
 
 
-def _cp1252_marker_repo(tmp_path):
-    repo = tmp_path / "repo"
+def _cp1252_marker_repo(tmp_path, name="repo"):
+    repo = tmp_path / name
     repo.mkdir()
     (repo / "a.py").write_text("x\n")
     for cmd in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "T"],
@@ -1151,18 +1218,18 @@ def test_check_prints_undecodable_path_on_cp1252_stdout(tmp_path):
     assert b"bad\xffname.py is missing" in result.stdout
 
 
-def test_record_and_check_non_ascii_repo_id_on_cp1252(tmp_path):
+def test_record_and_check_non_ascii_tree_id_on_cp1252(tmp_path):
     from cp1252_run import run_cp1252
-    repo = _cp1252_marker_repo(tmp_path)
-    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@gitlab.example:tëam/→★.git"], check=True)
+    repo = _cp1252_marker_repo(tmp_path, "tëam→★")
+    rid = str(repo.resolve())
     os.utime(repo / "a.py", (1_000_000_000, 1_000_000_000))
     state = tmp_path / "state"
     env = {"REVIEW_MARKER_STATE_FILE": str(state)}
     script = Path(__file__).parent.parent / "review_marker.py"
     rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"], extra_env=env)
     assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
-    assert rec.stdout.decode("utf-8") == "review-record: gitlab.example/tëam/→★:s1\n"
-    assert state.read_bytes().startswith("gitlab.example/tëam/→★:s1:".encode("utf-8"))
+    assert rec.stdout.decode("utf-8") == f"review-record: {rid}:s1\n"
+    assert state.read_bytes().startswith(f"{rid}:s1:".encode("utf-8"))
     chk = run_cp1252(script, ["check", "--repo", str(repo), "--session", "s1", "--files", "a.py"], extra_env=env)
     assert chk.returncode == 0, chk.stdout.decode("utf-8", "replace") + chk.stderr.decode("utf-8", "replace")
 
@@ -1199,17 +1266,17 @@ def test_check_reads_utf8_skill_log_on_cp1252(tmp_path):
 def test_record_compacts_non_ascii_store_on_cp1252(tmp_path):
     import time
     from cp1252_run import run_cp1252
-    repo = _cp1252_marker_repo(tmp_path)
-    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@gitlab.example:tëam/→★.git"], check=True)
+    repo = _cp1252_marker_repo(tmp_path, "tëam→★")
+    rid = str(repo.resolve())
     state = tmp_path / "state"
-    entry = f"gitlab.example/tëam/→★:s1:{int(time.time())}\n"
+    entry = f"{rid}:s1:{int(time.time())}\n"
     state.write_bytes((entry * (rm._COMPACT_AT_LINES + 1)).encode("utf-8"))
     script = Path(__file__).parent.parent / "review_marker.py"
     rec = run_cp1252(script, ["record", "--repo", str(repo), "--session", "s1"],
                      extra_env={"REVIEW_MARKER_STATE_FILE": str(state)})
     assert rec.returncode == 0, rec.stderr.decode("utf-8", "replace")
     lines = state.read_bytes().decode("utf-8").splitlines()
-    assert len(lines) == 1 and lines[0].startswith("gitlab.example/tëam/→★:s1:")
+    assert len(lines) == 1 and lines[0].startswith(f"{rid}:s1:")
 
 
 @pytest.mark.parametrize("call", [

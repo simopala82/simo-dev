@@ -11,17 +11,18 @@ Mid-session toggle: detect where you are in the canonical flow and drive it to *
 
 - User is stepping away and wants the task carried to MR without stalls; works from ANY point in the flow.
 - Not for: starting from scratch unattended (an unattended from-scratch build tool from a different plugin); tasks needing interactive direction approval.
+- Only inside an active simo-dev flow (`simo-dev:task-intake` already ran): §0's flow check stops it otherwise.
 
 **Launch as `/loop simo-dev:afk`** (no interval — self-paced): the §4 dead-man's-switch uses `ScheduleWakeup`, honored only inside `/loop`. Invoked plain → works but no auto-resume after a rate-limit pause; say so once and continue.
 
-Every `afk_state.py` and `afk_log.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"` — shell state does not survive between Bash calls — and always passes `--repo "<worktree-abs>"`, the absolute path of the worktree this task is using (the main checkout, if the task has none), so repo+branch identity never depends on the Bash tool's own cwd. Same requirement in `lib/wake-park.md`. On a wakeup re-fire, take `<worktree-abs>` (and the plan path, if any) from context / the compaction summary first — the no-plan log cannot be found without it — then confirm it against the `RESUME:` line at the top of the decision-log (§5); never assume it from the ambient cwd.
+Every `afk_state.py` and `afk_log.py` call below runs in a Bash block opening with `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"` — shell state does not survive between Bash calls — and always passes `--repo "<worktree-abs>"`, the absolute path of the worktree this task is using (the main checkout, if the task has none), so repo+branch identity never depends on the Bash tool's own cwd. Same requirement in `lib/wake-park.md`. On a wakeup re-fire, take `<worktree-abs>` (and the plan path, if any) from context / the compaction summary first — the no-plan log cannot be found without it — then confirm it against the `RESUME:` line at the top of the decision-log (§5); never assume it from the ambient cwd.
 
 ## Boundaries (inviolable — even unattended, even under "no interruptions" pressure)
 
 | Action | AFK behavior |
 |---|---|
 | push, MR-create, re-push | **Always automatic** on feature branches. Commit+push to a protected branch always asks — that gate is the park point (§0 guard, §6). |
-| `git merge` / `glab mr merge` / `gh pr merge` | **NEVER.** Hard human gate at the park point. |
+| `git merge` / `glab mr merge` / `glab api …/merge` / `gh pr merge` | **NEVER.** Hard human gate at the park point. |
 | `git push --force[-with-lease]` | **NEVER.** Forbidden in every mode. |
 | a session-spawn follow-up | **Suppressed** → logged as 🔖 deferred (needs a manual session start). |
 | a fresh user message mid-run | **Stop AFK** — disarm, go interactive (below). |
@@ -32,18 +33,27 @@ Every `afk_state.py` and `afk_log.py` call below runs in a Bash block opening wi
 
 While AFK is active (`afk_state.py is-active` exits 0), any **genuine user message** (not the wakeup re-fire) = the user is back → **stop driving**:
 
-1. `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` — tombstone for THIS repo+branch (already-armed wakeups exit at §0; other sessions untouched). Binding spelled out here rather than left to the convention above, same as `lib/wake-park.md`'s disarm: an unbound `R` exits rc 2 and writes no tombstone, while items 2-4 still announce "AFK off" — after which a queued wakeup re-fires and AFK resumes driving over the user.
+1. `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; python3 "$R/lib/afk_state.py" stop --repo "<worktree-abs>"` — tombstone for THIS repo+branch (already-armed wakeups exit at §0; other sessions untouched). Binding spelled out here rather than left to the convention above, same as `lib/wake-park.md`'s disarm: an unbound `R` exits rc 2 and writes no tombstone, while items 2-4 still announce "AFK off" — after which a queued wakeup re-fires and AFK resumes driving over the user.
 2. No `ScheduleWakeup` this turn → the `/loop` winds down.
 3. Append `[interrupt] user took over → AFK disarmed` to the decision-log (no plan → `afk_log.py append`, §5); keep the `RESUME:` line.
 4. One-line ack ("AFK off — you're driving. `simo-dev:afk` to resume."), then answer interactively — §2 no longer applies.
 
 ## 0. Arm (or honor a prior stop)
 
-**Stop-check — first action on every entry, including a wakeup re-fire.** `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/afk_state.py" is-stopped --repo "<worktree-abs>"` (checks ONLY this repo+branch). Binding spelled out at the site, not left to the convention above: this is the one call whose rc the body reads as a boolean, so an unbound `R` exits 2, falls through to Arm, and drives over a stop the user asked for. Exits 0 →
+**Flow check — before the stop-check, on every entry.** AFK drives an existing flow, never starts one:
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/flow_state.py" is-active --session "$CLAUDE_CODE_SESSION_ID" --cwd "<worktree-abs>"
+```
+
+rc 0 → continue. Any other rc (1 = not active; 2 = the script never ran) → print `afk needs an active simo-dev flow: run /simo-dev:task-intake first.` and **exit**, doing nothing else.
+
+**Stop-check — first action on every entry, including a wakeup re-fire.** `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; python3 "$R/lib/afk_state.py" is-stopped --repo "<worktree-abs>"` (checks ONLY this repo+branch). Binding spelled out at the site, not left to the convention above: this is the one call whose rc the body reads as a boolean, so an unbound `R` exits 2, falls through to Arm, and drives over a stop the user asked for. Exits 0 →
 - user explicitly (re)started AFK this turn → `afk_state.py arm` and continue below;
 - else (stale wakeup) → print "AFK is off for this task — `simo-dev:afk` to resume." and **exit**.
 
-**The tombstone this reads can be written by a different copy of `afk_state.py`.** The `afk_state.py` calls in this body run the released cache while that directory exists — a rendered body gets the placeholder substituted — while `lib/wake-park.md`'s park-time disarm runs the source tree, because the Read path substitutes nothing. (Once orphan cleanup removes the cache dir both sides resolve source and there is no split at all.) Both write `~/.claude/state/afk`, whose entries are `<repo-id>:<branch>:<state>:<epoch>` parsed with `rsplit(':', 3)`, with malformed entries purged on write. So between a merge and the next release **plus** a session restart the two can disagree, and the two legs of that format fail in opposite directions — the same split `hooks/review_record.py` documents for `review-loop`:
+**The tombstone this reads can be written by a different copy of `afk_state.py`.** The `afk_state.py` calls in this body run the released cache while that directory exists — a rendered body gets the placeholder substituted — while `lib/wake-park.md`'s park-time disarm runs the source tree (or, on an install without one, the highest cached version), because the Read path substitutes nothing. (Once orphan cleanup removes the cache dir both sides resolve source and there is no split at all.) Both write `~/.claude/state/afk`, whose entries are `<repo-id>:<branch>:<state>:<epoch>` parsed with `rsplit(':', 3)`, with malformed entries purged on write. So between a merge and the next release **plus** a session restart the two can disagree, and the two legs of that format fail in opposite directions — the same split `hooks/review_record.py` documents for `review-loop`:
 
 - **Structural**, by either of two mechanisms, both landing on `absent` — the "never armed" answer — so the bullet above does not fire and AFK keeps driving unattended. Toward *more* automation. A field added or dropped fails `_parse` outright; a `repo_identity` change parses cleanly and the lookup simply misses, which is the same distinction `hooks/review_record.py` draws for its own store.
 - **The epoch's units or meaning**: it still parses, but `_live_entries` keeps an entry while `now - epoch <= TTL_SECONDS`, so re-basing seconds to milliseconds makes that difference negative and the `stopped` entry never expires. `is-stopped` then keeps exiting 0 and AFK refuses to resume. Toward *less*.
@@ -53,7 +63,7 @@ Treat the entry format, the epoch's units and `repo_identity` as frozen unless y
 **Arm.** The publish path is unconditional for everyone (`commit` step 10 always enters `mr-followup`); AFK only arms its own liveness state. A protected-branch repo parks at its own commit+push gate (hard human gate). Emit one line, then:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/afk_state.py" arm --repo "<worktree-abs>"
 ```
 
@@ -62,7 +72,7 @@ python3 "$R/lib/afk_state.py" arm --repo "<worktree-abs>"
 Check for a `RESUME:` marker in the decision-log first (fresh window lands here): the plan-sibling log when the task has a plan, otherwise:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/afk_log.py" show --repo "<worktree-abs>"
 ```
 
@@ -83,8 +93,12 @@ Then run forward to the park point. A `simo-dev:mr-followup` resume, from the `R
 
 While AFK is active, auto-answer every gate and **append each answer to the decision-log**:
 
-- **Direction gate** → `y` (recommended direction). If `deep-dive` would be the default, take the recommended candidate instead, log `deep-dive skipped → took recommended <X>`. Never enter brainstorming/grill (they block on the user).
-- **Plan-review gate** → shape-aware (task-intake step 7.5's own gate). On Shape A (no spawn offered — the blockquote has only `y`/`edit <feedback>`/`restart`, no `n` option, and no `Recommended: start_session` line above it) → `y`, with the same conditional log line as today: when it printed `Recommended: edit — <n> finding(s) from plan critique.`, also log `[gate] plan-review → y (despite <n> finding(s) from plan critique)`; when it printed no such line (`plan_critique` explicitly set to `none`, or the dispatch returned zero findings), no extra log line. On Shape B (recognizable by the `n` option and the `Recommended: start_session — ...` line above the gate) → `n` (never `y`, which now means spawn and would trigger the suppressed hand-off in §3) — log `[gate] plan-review (spawn offered) → n (afk never spawns)`.
+- **Direction gate** (task-intake step 4c) → `y` when the `Recommended:` letter is a direction. Otherwise (it recommends `deep-dive`) pick the `(preferred)` direction's letter, log `deep-dive skipped → took preferred <letter>`. Never `redirect`. Never enter brainstorming/grill (they block on the user).
+- **Plan writer `BLOCKED`** (task-intake step 7) → answer it yourself with the option closest to the approved direction, log `[gate] plan-writer BLOCKED → <option>` (the decision-log is where the user revisits it).
+- **Plan-review gate** (task-intake step 7.5) → `y`, except:
+  - Never `proceed in a new session`: the gate never recommends it, and a new session would trigger the hand-off §3 suppresses.
+  - Recommended `edit` or `restart` → `proceed`, log `[gate] plan-review → proceed (despite <n> finding(s) from plan critique)`, `<n>` = the `⚠ Plan critique` entry count; no findings (e.g. a recommended `restart` from a base overlap) → log the recommendation skipped instead.
+  - A recommended `apply and re-present` is taken as-is, subject to the cap and logged only with the cap line below: `apply and re-present` at most 2 times per gate. Every apply-and-re-present pass, whether reached by `y` or by name, logs exactly `[gate] plan-review <plan-basename> → apply and re-present`; the cap counts those lines for the current plan basename in the decision-log (append-only across AFK runs, so the basename scopes it). Cap reached → `apply and proceed` if shown, else `proceed`, logged.
 - **`simo-dev:review-loop`** → run its capped iterations; a clean run cascades into `simo-dev:commit` on its own (step 8); on unresolved findings pick option 1 (skip → `simo-dev:commit`), logged.
 - **`simo-dev:commit` step 10** → enters `simo-dev:mr-followup` on its own (unconditional). Push automatic. A protected-branch commit+push gate IS hard — never auto-answer, park there (§6).
 - **`simo-dev:mr-followup` entry check prints `STOP: pending ledger work on <file>`** → uncommitted Also-fixed ledger work. Never re-invoke mr-followup on it and never treat it as settled (§6 would park with that work uncommitted); `simo-dev:commit` step 10's re-entry is the way back. No `[ledger-stop]` entry in the decision-log yet → in one step append `[ledger-stop] <file> → review-loop` and point `RESUME:` at that leg (§5), then run `simo-dev:review-loop`, whose clean run cascades into `simo-dev:commit` without `--no-mr`. The work gets reviewed and committed whoever left it, so the recap lists that `[ledger-stop]` entry under decisions, where the user can revisit it by number. Park as a ⚠ blocker (§6), never re-running the leg, when the leg ends without a commit after §4's retry discipline, or the STOP comes back with a `[ledger-stop]` entry already logged (any file, including one from an earlier AFK run of the same task — the plan's decision-log keeps it). The leg's commit can succeed on other files and clear the ledger while leaving `<file>` out (e.g. an untracked file it did not stage), so mr-followup then settles without stopping again: §6's dirty-tree check catches it, and any other pending file the single-file STOP line never named.
@@ -93,7 +107,7 @@ While AFK is active, auto-answer every gate and **append each answer to the deci
 
 ## 3. Hand-off override
 
-- Intake's plan-review gate (task-intake step 7.5) → forced **in-session** via §2's `n` answer whenever the spawn-offered shape appears. Intake step 8's profile/mode table (reached only via the `table-pick` routing, when step 7.5's gate offered no spawn choice at all) → still forced **in-session** regardless of what the table would otherwise silently pick for a "Multi-step / verbose / context-heavy" plan; afk never lets the table's own `start_session` pick stand. Never a session-spawn follow-up, through either path.
+- Intake's plan-review gate (task-intake step 7.5) → always an in-session option (§2), so step 8 always takes its In-session row. Never a session-spawn follow-up.
 - Any session-spawn follow-up the flow would fire → suppressed, logged 🔖 `deferred spawn: <title> — accept manually after review`.
 - Allowed: parallel-`Agent` (`subagent_type`), background `Agent`/`Bash` (`run_in_background: true`) — except a `simo-dev:code-reviewer` dispatch, always `run_in_background: false` (`simo-dev:code-review-protocol` item 2).
 
@@ -111,14 +125,14 @@ Append-only; survives compaction. Single `RESUME:` line at the top, updated each
 - **No plan**: `~/.claude/state/afk-<branch>.md` (`/` in the branch → `-`), read and written **only** through `lib/afk_log.py` — never redirects, `cat`, Read, Write or Edit on that path: a command naming it gets a non-persistable permission prompt in sessions whose cwd is another repo. Keep that path out of entry and `RESUME:` text too (the check reads the heredoc body; the script prints the path, don't copy it in).
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/afk_log.py" append --repo "<worktree-abs>" <<'AFKLOG'
-- [gate] direction → y (recommended A)
+- [gate] direction → y (a, preferred)
 AFKLOG
 ```
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/afk_log.py" resume --repo "<worktree-abs>" <<'AFKLOG'
 <current step + enough context to continue cold>
 AFKLOG
@@ -139,7 +153,7 @@ When `simo-dev:mr-followup` settles: first list `git -C "<worktree-abs>" status 
 - About to fire a session-spawn follow-up → suppress and log.
 - About to enter `brainstorming`/`grill-me` → NO (they block on the user); take the recommended option, log.
 - User message arrived and you're tempted to keep driving → NO: that IS the stop signal, disarm and go interactive.
-- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages, and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`. Same for any `simo-dev:commit` step 9 `STOP: could not resolve …` (GitLab username, MR title, MR target branch) and for a failed step-9 `glab mr create` / `gh pr create` call: follow that step's per-cause recovery paragraph, not this line. Same for `simo-dev:mr-followup`'s `STOP: pending ledger work on …` and a failed or incomplete `[ledger-stop]` leg: follow §2, not this line.
+- About to stop because a *command* failed → retry/reschedule first; only park at the terminal state. **Exception, and the rule carries no attempt cap so this is the whole brake:** `simo-dev:commit` step 5's pre-push guard classifies its own `STOP:` messages (`skills/commit/lib/failure-paths.md`), and two of them park instead — a guard that never ran or never answered will answer the same way forever. Follow that paragraph, not this line, on any `STOP: could not verify MR state`. Same for any non-zero exit of `simo-dev:commit` step 9's `lib/mr_create.py create` (rc 1 `STOP:`, rc 2 `R` unbound or a placeholder left: re-issue once, then park, rc 4 failed create call, rc 5 verification STOP): follow `skills/commit/lib/failure-paths.md` "Step 9: create block failed", not this line. A step 7 `prepare` STOP routes three ways: `STOP: local base ahead` → failure-paths "Step 7: local base ahead of origin"; `STOP: target: …` → `SKILL.md` step 7 **MR target** (afk: stop, record it, never guess); any other prepare STOP → failure-paths "Step 7: other prepare stops". `prepare` rc 3 `ASK: scope_fetch_cmd prefix=<P> key=<K>` → answer skip: run `python3 "$R/lib/tracker_config.py" set <P> scope_fetch_cmd -`, re-run `prepare`, record it in the afk summary. Same for `simo-dev:mr-followup`'s `STOP: pending ledger work on …` and a failed or incomplete `[ledger-stop]` leg: follow §2, not this line.
 
 ## Honors
 

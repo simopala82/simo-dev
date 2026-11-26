@@ -190,6 +190,32 @@ def test_gitlab_system_notes_only_print_sentinel(monkeypatch, capsys):
     assert out.strip() == SENTINEL
 
 
+@pytest.mark.parametrize("project, mr_iid", [
+    # A zsh `set -- $x` loop over "<project> <iid>" pairs does not word-split: the
+    # whole pair lands in $1 and $2 is empty (observed 2026-11-23, GitLab answered 400).
+    ("grp/proj 91", ""),
+    ("grp/proj", ""),
+    ("grp/proj", "!91"),
+    ("grp/proj", "abc"),
+])
+def test_gitlab_bad_args_fail_before_any_request(monkeypatch, capsys, project, mr_iid):
+    def no_token():
+        raise AssertionError("token looked up for bad args")
+
+    def no_request(req):
+        raise AssertionError(f"request sent for bad args: {req.full_url}")
+
+    monkeypatch.setattr(gl, "get_token", no_token)
+    monkeypatch.setattr(gl.urllib.request, "urlopen", no_request)
+    monkeypatch.setattr(sys, "argv", ["fetch_discussions.py", project, mr_iid, "gitlab.example.com"])
+    with pytest.raises(SystemExit) as exc:
+        gl.main()
+    assert exc.value.code not in (0, None)
+    out, _ = capsys.readouterr()
+    assert SENTINEL not in out
+    assert "Error:" in str(exc.value.code)
+
+
 gh = _load("fetch_pr_threads")
 
 _THREADS_OK = {"data": {"repository": {"pullRequest": {

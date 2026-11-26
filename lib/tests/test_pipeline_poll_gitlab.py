@@ -2,10 +2,12 @@
 code: we run the real file against a fake `glab`. Python port of the tests for the
 GitLab poll body formerly embedded in skills/mr-followup/lib/pipeline-scripts.md
 (OSS migration step 7c) -- same env vars, same exit-code contract, same sticky SEEN
-flag. Dropped from the bash-era suite: cross-shell parametrization and the injected
-virtual clock (both moot with a single Python interpreter -- approved design,
-Decision 3), and the unwritable-stderr-scratch-file test (the scratch file itself no
-longer exists -- subprocess.run captures stderr in-memory).
+flag. Dropped from the bash-era suite: cross-shell parametrization and, suite-wide,
+the injected virtual clock (both moot with a single Python interpreter -- approved
+design, Decision 3), and the unwritable-stderr-scratch-file test (the scratch file
+itself no longer exists -- subprocess.run captures stderr in-memory). One test brings
+a virtual clock back, in-process: a bound that must hold to the second cannot be
+measured on the wall clock of a loaded machine.
 
 What each case pins down (see the design spec's exit-code contract):
   0 terminal status | 1 refused to start |
@@ -13,10 +15,13 @@ What each case pins down (see the design spec's exit-code contract):
   4 timed out with a pipeline still transitional |
   5 the read that hit the ceiling failed, so the state is unverified
 """
+import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -42,18 +47,8 @@ def _init_repo(path):
                           capture_output=True, text=True).stdout.strip()
 
 
-def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT, counter=None,
-         init_git=True):
-    """Run the real script against a fake `glab` first on PATH. The outer process cwd
-    is deliberately NOT <worktree-abs>: the fake refuses to answer unless its own cwd
-    is <worktree-abs>, which is what makes the script's internal `cwd=` passthrough
-    (replacing the bash body's `cd`) observable -- forgetting it leaves every case
-    green. With init_git the worktree becomes a real repo and the fake answers
-    `--sha` only for its HEAD, so a poll that filters on any other SHA sees nothing."""
-    worktree = tmp_path if worktree is None else worktree
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir(exist_ok=True)
-
+def _fake_glab_env(tmp_path, mode, worktree, env, counter, init_git):
+    """The environment that puts the fake `glab` first on PATH and configures it."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     shim = bindir / "glab"
@@ -74,6 +69,21 @@ def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT
     run_env["FAKE_GLAB_EXPECT_CWD"] = str(worktree)
     if counter is not None:
         run_env["FAKE_GLAB_COUNTER"] = str(counter)
+    return run_env
+
+
+def _run(tmp_path, mode, worktree=None, branch=BRANCH, env=None, timeout=TIMEOUT, counter=None,
+         init_git=True):
+    """Run the real script against a fake `glab` first on PATH. The outer process cwd
+    is deliberately NOT <worktree-abs>: the fake refuses to answer unless its own cwd
+    is <worktree-abs>, which is what makes the script's internal `cwd=` passthrough
+    (replacing the bash body's `cd`) observable -- forgetting it leaves every case
+    green. With init_git the worktree becomes a real repo and the fake answers
+    `--sha` only for its HEAD, so a poll that filters on any other SHA sees nothing."""
+    worktree = tmp_path if worktree is None else worktree
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(exist_ok=True)
+    run_env = _fake_glab_env(tmp_path, mode, worktree, env, counter, init_git)
 
     argv = [sys.executable, str(SCRIPT), str(worktree), branch]
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
@@ -166,16 +176,21 @@ def test_empty_string_ci_config_path_falls_back_to_the_default_file(tmp_path):
 def test_ambiguous_probe_keeps_the_ceiling_and_probes_once(tmp_path, api_mode, api_calls):
     counter = tmp_path / "calls"
     api_log = tmp_path / "api.log"
+    started = time.monotonic()
     r = _run(tmp_path, "empty", counter=counter,
              env={"FAKE_GLAB_API_MODE": api_mode, "FAKE_GLAB_API_LOG": str(api_log)})
+    took = time.monotonic() - started
     if api_mode in ("remote_config_path", "url_config_path"):
         probed = api_log.read_text() if api_log.exists() else ""
         assert "repository/files/" not in probed, "remote config path probed as a local file"
     assert r.returncode == 3, r.stdout + r.stderr
     assert "NO PIPELINE for" in r.stdout
     assert "NO CI CONFIG" not in r.stdout
+    ceiling = int(ENV_FAST["POLL_NOPIPE_MAX_WAIT"])
+    after = re.search(r"NO PIPELINE for .* after (\d+)s", r.stdout)
+    assert after and int(after.group(1)) >= ceiling, "reported a verdict before the ceiling"
+    assert took >= ceiling, "returned after {:.1f}s, before the ceiling".format(took)
     lines = counter.read_text().splitlines()
-    assert lines.count("call") >= 2, "returned before the ceiling"
     assert lines.count("api") == api_calls, "probe must run exactly once, lazily"
 
 
@@ -368,16 +383,49 @@ def test_ceilings_count_wall_clock_not_sleeps(tmp_path):
     assert counter.read_text().count("call") == 1, "ceiling is counting sleeps, not elapsed time"
 
 
-def test_interval_larger_than_the_ceiling_still_terminates_within_the_bound(tmp_path):
+@pytest.mark.parametrize("latency,expected_calls", [(0.0, 2), (1.5, 2), (2.5, 1)])
+def test_interval_larger_than_the_ceiling_still_terminates_within_the_bound(tmp_path, monkeypatch, latency,
+                                                                            expected_calls):
+    """Runs main() in-process on a virtual clock that moves only by the poll's sleeps
+    plus `latency` per `glab` call. On the real clock this flaked under load: a first
+    `glab` call slow enough to cover the 2s ceiling on its own ends the poll after one
+    call (correct behaviour, the 2.5 case, which failed the old `calls == 2`), and git
+    init plus two Python startups could eat the 2s slack of the wall-clock bound. The
+    1.5 case pins that a slow call under the ceiling still leaves room for the second."""
     counter = tmp_path / "calls"
-    started = time.monotonic()
-    r = _run(tmp_path, "running", timeout=20, counter=counter,
-             env={"POLL_MAX_WAIT": "2", "POLL_NOPIPE_MAX_WAIT": "2", "POLL_INTERVAL": "3"})
-    took = time.monotonic() - started
-    assert r.returncode == 4, r.stdout + r.stderr
+    max_wait, interval = 2, 3
+    run_env = _fake_glab_env(tmp_path, "running", tmp_path, counter=counter, init_git=True,
+                             env={"POLL_MAX_WAIT": str(max_wait), "POLL_NOPIPE_MAX_WAIT": str(max_wait),
+                                  "POLL_INTERVAL": str(interval)})
+    for var in ("GIT_DIR", "GIT_WORK_TREE"):
+        monkeypatch.delenv(var, raising=False)
+    for key, value in run_env.items():
+        monkeypatch.setenv(key, value)
+
+    spec = importlib.util.spec_from_file_location("pipeline_poll_gitlab", SCRIPT)
+    poll = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(poll)
+    clock = [0.0]
+
+    def run_with_latency(argv, **kwargs):
+        result = subprocess.run(argv, **kwargs)
+        if argv[0] == "glab":
+            clock[0] += latency
+        return result
+
+    def advance(seconds):
+        clock[0] += seconds
+
+    # Patches module attributes: relies on the script's `import time` / `import subprocess`.
+    monkeypatch.setattr(poll, "subprocess", types.SimpleNamespace(run=run_with_latency))
+    monkeypatch.setattr(poll, "time", types.SimpleNamespace(monotonic=lambda: clock[0], sleep=advance,
+                                                            strftime=time.strftime))
+
+    assert poll.main([str(tmp_path), BRANCH]) == 4
     calls = counter.read_text().count("call")
-    assert calls == 2, "polled {} times; the ceiling is late by an interval".format(calls)
-    assert took < 2 + 3 + 2, "verdict took {:.1f}s, past ceiling + interval + slack".format(took)
+    assert calls == expected_calls, "polled {} times, expected {}".format(calls, expected_calls)
+    bound = max_wait + interval + latency
+    assert clock[0] <= bound, "verdict took {:.1f}s, past ceiling + interval + one call's latency".format(clock[0])
 
 
 def test_lowered_max_wait_does_not_outrun_the_no_pipeline_ceiling(tmp_path):

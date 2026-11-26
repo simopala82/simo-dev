@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""SubagentStop hook. Records a review for this repo+session when the code-reviewer
+"""SubagentStop hook. Records a review for this work tree+session when the code-reviewer
 subagent CONCLUDES. See docs/adr/0005-review-record-fires-on-subagent-stop.md for why
 SubagentStop (not PostToolUse:Skill or PostToolUse:Agent) is the right trigger, and why
 the `REPO:` marker must be line 1 of the transcript's FIRST user message (security
@@ -64,8 +64,10 @@ def _handback_concluded(transcript: str) -> bool:
     later ended in text, so last_assistant_message covers that shape anyway. An interrupt
     landing while the handback call itself runs leaves the accepted shape and records; that
     window is accepted, since the full report is already in the transcript."""
+    # split("\n"), never splitlines(): the CLI leaves NEL, U+2028 and U+2029 raw inside JSON
+    # strings, and splitlines() breaks the handback entry there into unparsable fragments.
     try:
-        lines = Path(transcript).read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = Path(transcript).read_text(encoding="utf-8", errors="replace").split("\n")
     except OSError:
         return False
     entries = []
@@ -213,7 +215,7 @@ def _detach(payload: dict, session: str, transcript: str) -> None:
     2.1.308 binds SubagentStop hooks to the agent's abort signal and can kill one still
     running at stream teardown; a probe never saw it happen, so this is insurance. The
     record path is slow enough to be worth insuring: it waits for the handback and spawns
-    several processes (two Python scripts and git, which review_marker's repo_id runs
+    several processes (two Python scripts and git, which review_marker's _tree_id runs
     again). The payload travels in argv, so the spawn is one atomic step with no pipe left
     half-written by a kill; it is slimmed because only the presence of the verdict text
     matters."""

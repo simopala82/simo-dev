@@ -7,9 +7,8 @@
 Replaces the small command-line JSON field-extraction snippets previously used across
 simo-dev's commit/mr-review/mr-followup skills -- no external JSON-parsing tool is a
 plugin dependency any more (see README.md "Prerequisites"). Every single-field
-extraction, reused or not, routes through this helper; only the one extraction that
-isn't single-field (a composite multi-field formatted string) has its own script
-instead: skills/mr-followup/lib/format_mr_view.py.
+extraction, reused or not, routes through this helper (mr-followup's MR view is parsed
+inside lib/mr_followup.py, which reads several fields at once).
 
 Usage:
     json_field.py <file|-> <path> [path2 ...] [default]

@@ -19,8 +19,8 @@ source path is correctly treated as overlapping rather than
 independent. A task's **Interfaces:** block (Consumes:/Produces:) is never
 read -- only **Files:** overlap decides whether two tasks batch together;
 the operational implication for the caller is documented in
-simo-dev:plan-execute's SKILL.md, in the "Known, unmitigated limitation"
-paragraph. Tasks are read in plan order and merged into the
+simo-dev:plan-execute's lib/agent-dispatch.md, in the "Known, unmitigated
+limitation" paragraph. Tasks are read in plan order and merged into the
 current batch only when their file set is disjoint from every task
 already in it; otherwise the current batch closes and a new one starts
 with that task. This never reorders tasks -- plan order is preserved

@@ -266,6 +266,14 @@ def test_post_merge_state_no_deploy_roundtrip(tmp_path, capsys):
     assert capsys.readouterr().out == "Done"
 
 
+def test_browse_url_roundtrips_through_the_cli(tmp_path, capsys):
+    path = tmp_path / "tracker.json"
+    template = "https://tracker.example/browse/{key}"
+    assert tc.main(["set", "AB", "browse_url", template, "--config", str(path)]) == 0
+    assert tc.main(["get", "AB", "browse_url", "--config", str(path)]) == 0
+    assert capsys.readouterr().out == template
+
+
 def test_ticket_line_renders_key_and_number(tmp_path, capsys):
     path = tmp_path / "tracker.json"
     tc.set_field("AB", "pr_body_ticket_line", "Closes #{number} ({key})", path)

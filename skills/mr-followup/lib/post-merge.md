@@ -1,38 +1,66 @@
-# Post-merge procedure — verification notes, cleanup, journal, next sub-task / parent close, release hook
+# Post-merge procedure — ticket transition, verification notes, cleanup, journal, next sub-task / parent close, release hook
 
-Loaded on demand from `mr-followup` steps 8 / 8.5 / 8.6 / 8.7, once the user has confirmed the merge.
+Loaded on demand from `mr-followup` steps 8 / 8.5 / 8.6 / 8.7, once the user has confirmed the merge. Run the sections in order.
+
+## Merge entry differences
+
+In a fresh session started from the step 7.6 card (`mr-followup` "Merge entry"), every step below runs as written, with the brief's literals and these differences:
+
+- Verification notes: "step 7.5 passed this session" reads as the brief's `qa gate: passed <date>`.
+- Worktree cleanup: every path comes from the brief, so it runs the same from the main checkout, from this session's own worktree, or from the task tree. In the desktop-app branch the tree belongs to the **parked** session (`<parked>`). That echo's "Archiving this session" line is replaced in the report by: archive this session and the parked one (once detached, this one is not archived with it; the app removes the task tree with the parked one). This session in a desktop-app worktree of its own (the card's `use_worktree` `true`): add its branch (`git -C "<this session's cwd>" branch --show-current`, read before the archive) to the `branch -D` line, since archiving removes that tree but not its branch.
+- Journal (8.5): `TASK` = the brief's `task id` when the cleanup printed none. Before the `event --type outcome` line, end the parked session's hold so its later use does not land in this task: `python3 "$R/lib/flow_telemetry.py" close --session "<parked>" --task "$TASK" || true` (skip when `<parked>` is `unknown`). `--task` makes it a no-op (rc 1, `not closed`) when the parked session started other work while the gate waited. The `handoff` this writes is dated at the merge, so the parked session's share of the task's cost runs to the merge: its 7.5/7.6 work is counted, and so is anything else it did while the card waited.
+
+## Ticket transition (step 8)
+
+```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+KEY=$(python3 "$R/lib/derive_ticket_key.py" "<branch>" --cwd "<worktree-abs>")
+if [ -n "$KEY" ]; then
+  PREFIX="${KEY%%-*}"
+  NO_DEPLOY=$(python3 "$R/lib/check_deploy_required.py" "$KEY" --repo "<worktree-abs>")
+  if [ "$NO_DEPLOY" = "1" ]; then
+    TARGET=$(python3 "$R/lib/tracker_config.py" get "$PREFIX" post_merge_state_no_deploy)
+    [ -z "$TARGET" ] && TARGET="Done"
+  else
+    TARGET=$(python3 "$R/lib/tracker_config.py" get "$PREFIX" post_merge_state)
+    [ -z "$TARGET" ] && TARGET="Ready for Testing"
+  fi
+  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$KEY" "$TARGET" --leaf-only --sync-parent --clear-blocked || echo "WARNING: transition_cmd failed for $KEY -> $TARGET (continuing)"
+  echo "post-merge: KEY=$KEY PREFIX=$PREFIX TARGET=$TARGET"
+fi
+```
+
+When the merged plan (located by the same `docs/plans/YYYY-MM-DD-<key-lower>-<name>.md` convention `plan-write` uses, ticket key anchored right after the date) declares `**Deploy required:** no`, the target instead comes from `post_merge_state_no_deploy` (falling back to `"Done"` when unset); any ambiguity in locating or reading that plan (not found, more than one match, field absent/unrecognized) falls back to the path below unchanged. Target state comes from `post_merge_state` for the prefix, defaulting to `"Ready for Testing"` when unset. `DEV_FLOW_NO_TRACKER=1` / `.claude/no-tracker` marker skip; no `transition_cmd` configured for the prefix also skips, no special-case needed; forward-only no-op if the ticket already moved past target. A `transition_cmd` failure — any non-zero exit, including a `--leaf-only` refusal on an umbrella ticket or a `--sync-parent` exit 7 (all the parent's sub-tasks at/past Done, see `simo-dev:task-intake` step 2.5; followed up by step 8.6's parent-close gate) — only prints the warning above and the flow continues.
+
+**Verification notes ticket comment** — posted at MR open (`simo-dev:commit` step 9) and kept current by step 7.4's supersede check; post-merge posts only in the cases the section below lists (no notes recorded for this MR, or a passing step 7.5 this session). Run it between the ticket transition and the cleanup (the notes need branch/MR/diff context, and the per-MR record lives in the worktree's git dir, which cleanup removes). Consumed at release time by the release skill's per-ticket verify step, which confirms the deployed behavior and transitions the ticket (`Ready for Deploy` after QA deploy, `Done` after prod). Spec: `skills/commit/lib/verification-notes.md`.
+
+Then auto-execute the worktree cleanup (pre-approved exception — runs ONLY after the user-approved merge) and run the journal step (step 8.5, below): it records the task's outcome as a flow event, attributes its tokens, regenerates `~/.claude/state/dev-flow-journal.md` and the HTML dashboard from the flow events and clears the session's task ID (skip for `--no-mr`/WIP runs that never merged). After the journal, step 8.6 offers the next ready sibling sub-task as a new session (gated y/N), or the umbrella close once every sub-task is Done — both behind a user gate, driven by the `post-merge:` line printed above (the worktree is gone by then, unless it is a desktop-app worktree or the main checkout, left in place). Last, step 8.7 invokes the repo's configured release skill, if any, with args `post-merge` — no ticket needed; an unconfigured repo prints nothing.
 
 ## Verification notes ticket comment
 
-One comment on the ticket, posted directly (no confirmation), in English (repo-artifact convention). Skip silently when there is no ticket key (`DEV_FLOW_NO_TRACKER` / `.claude/no-tracker`). Idempotent: an existing `Verification notes (auto)` comment mentioning this MR → skip (safe on resume).
+The notes were posted at MR open (`simo-dev:commit` step 9) and kept current by step 7.4's supersede check. Post-merge follows `skills/commit/lib/verification-notes.md` (path relative to the plugin root — load it on demand; its **Gate before building anything** runs first, and its **Inputs** give post-merge's sources: HEAD from the MR view, the diff from `glab mr diff` / `gh pr diff`):
 
-Content — terse and actionable for a context-free release-time agent (it has no session context, only the ticket):
+1. Nothing recorded for this MR (an MR opened before this flow, or from another worktree) → **First post**:
+   ```bash
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+   python3 "$R/lib/verification_notes_state.py" has --repo "<worktree-abs>" --mr "<mr-url>"
+   ```
+2. `has` → `yes` → always the **Supersede check**, so a push made outside the flow before the merge (a forge-UI suggestion, a manual push after the clean exit) still gets its notes; add `--qa-gate` only when step 7.5 passed this session, and then the rebuilt notes carry the `Pre-merge QA gate: passed <date>` line:
+   ```bash
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+   python3 "$R/lib/verification_notes_state.py" stale --repo "<worktree-abs>" --mr "<mr-url>" --head "<MR head from the view call>"   # + --qa-gate after a passing 7.5
+   ```
 
-```
-h4. Verification notes (auto)
-* MR: <url>
-* Change: <one-paragraph summary of the merged change>
-* QA check: <concrete steps — endpoints to call, jobs to trigger, expected vs previous behavior>
-* PROD check: <prod equivalents — base URL / ArgoCD app names where they differ, else "same as QA">
-* Pre-merge QA gate: <"passed <date>" if step 7.5 ran clean this session, else omit this line>
-```
-
-Write the body to a temp file, then post it through the shared tracker comment mechanism — NOT a direct CLI call and NOT a positional/heredoc body (a positional/heredoc invocation of the underlying comment-posting CLI hung 15+ minutes with no output when backgrounded, no TTY present — observed 2026-08-25):
-
-```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/post_tracker_comment.py" "<KEY>" "<tmpfile>"
-```
-
-This routes through `tracker_config.py`'s `comment_cmd` field (`lib/tracker_config.py`), same as every other gate comment the dev flow posts — **behavior change**: the comment now posts only when `comment_cmd` is configured for `<KEY>`'s prefix. Previously this section always attempted a direct post; a prefix that never runs `tracker_config.py set <PREFIX> comment_cmd "python3 <path to jira_comment.py>"` (see `lib/tracker_config.py`'s docstring for the `comment_cmd` contract) now gets no verification-notes comment at all. `jira_comment.py` (not shipped in the published plugin) is the CLI+REST-fallback implementation this used to inline here. Consumers: the release skill's per-ticket verify step reads the latest such comment after a QA/prod deploy; when absent it falls back to MR description + ticket body.
-
-Announce in one line, reading the script's own stdout: `posted: <KEY>` → `Verification notes: commented on <KEY>`; `skipped: ...` → `Verification notes: skipped — <the script's reason>`; `failed: ...` → surface that line as-is, do not swallow it.
+`stale` → `no`, or nothing changed after the rebuild → post nothing and announce `Verification notes: already posted at MR open`. Other outcomes are announced as the spec's **Announce** section says.
 
 ## Worktree cleanup
 
 Auto-execute, no prompt — the one pre-approved destructive exception (CLAUDE.md carves it out): runs ONLY after a merge the user already approved. Never trigger or confirm the merge here.
 
 ```bash
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+# Step 8.5 needs the task ID once the worktree marker is gone: print it while it exists.
+echo "task-id: $(python3 "$R/lib/flow_telemetry.py" current --session "$CLAUDE_CODE_SESSION_ID" --cwd "<path>")"
 # Removal runs FROM the main checkout. Removing the one you are standing in does succeed,
 # but it unlinks your cwd and any later BARE git command then dies with "Unable to read
 # current working directory" for the life of the shell — hence -C "$MAIN" throughout, which
@@ -87,8 +115,18 @@ WT_GITDIR=$(git -C "<path>" rev-parse --path-format=absolute --git-dir 2>/dev/nu
 # proposes inherits that cwd, so removing it makes them fail with "Working directory no longer
 # exists". The app owns that tree's removal, on archive.
 case "<path>" in */.claude/worktrees/*) WT_HARNESS=1 ;; *) WT_HARNESS= ;; esac
-if [ -n "$WT_HARNESS" ] && [ -n "$WT_GITDIR" ] && [ -e "$WT_GITDIR/claude-desktop-worktree" ]; then
+# A task resumed in place on the main checkout (task-intake lib/resume-path.md) has no worktree
+# to remove, and its branch is checked out there: never switch it here, another session may be
+# working in it.
+if [ "<path>" -ef "$MAIN" ]; then
+  echo "post-merge: <path> is the main checkout — leaving it and branch <name> in place."
+  python3 "$R/lib/flow_state.py" off --repo "<path>"   # a marker exists only if intake had no session id
+  [ -n "$WT_DIRTY" ] && printf 'Uncommitted:\n%s\n' "$WT_DIRTY"
+  [ -n "$WT_UNPUSHED" ] && printf 'Unpushed commits:\n%s\n' "$WT_UNPUSHED"
+  echo "When the checkout is free: git -C \"$MAIN\" switch ${DEFAULT_BRANCH:-<default-branch>} && git -C \"$MAIN\" pull --ff-only && git -C \"$MAIN\" branch -D <name>"
+elif [ -n "$WT_HARNESS" ] && [ -n "$WT_GITDIR" ] && [ -e "$WT_GITDIR/claude-desktop-worktree" ]; then
   echo "post-merge: <path> is a desktop-app worktree — leaving it and branch <name> in place."
+  python3 "$R/lib/flow_state.py" off --repo "<path>"   # the tree outlives the task: end its flow
   [ -n "$WT_DIRTY" ] && printf 'Uncommitted:\n%s\n' "$WT_DIRTY"
   [ -n "$WT_UNPUSHED" ] && printf 'Unpushed commits:\n%s\n' "$WT_UNPUSHED"
   echo "Archiving this session should make the app remove it (kept when it holds uncommitted changes); the app does not delete branches. Once the tree is gone: git -C \"$MAIN\" branch -D <name>"
@@ -117,115 +155,43 @@ fi
 
 Pull failed with "untracked working tree files would be overwritten by merge" → leftover carried originals (a `cp` during intake carry instead of a move — task-intake `lib/worktree-carry.md`). For each file the error lists: remove it ONLY if identical to the incoming tracked version (`git -C "$MAIN" show "origin/$DEFAULT_BRANCH:<path>" | diff - "$MAIN/<path>"`), then retry the pull once. Content differs → leave the file, report it, continue cleanup.
 
-Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`) — or, when the desktop-app skip or the dirty/unpushed guard fired, report that branch's own lines verbatim instead (worktree and branch were left in place, not an error). Plus, separately, one line whenever the main-refresh below did not land — that step's own skip line verbatim, or the pull's own error. Neither refresh outcome is a failure of this step, but both leave `$MAIN` behind the remote — and on that skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
+Flow marker (`lib/flow_state.py`): removing the worktree removes its git dir and the marker with it. The desktop-app branch clears it explicitly, since that tree stays; so does the main-checkout branch (a task resumed in place), which holds a marker only when intake had no session id. The dirty/unpushed guard keeps it on purpose: the work there is unfinished, and a later manual `worktree remove` clears it.
+
+Report what was removed in one line (e.g. `Cleaned up: worktree <path>, branch <name>`) — or, when the main-checkout skip, the desktop-app skip or the dirty/unpushed guard fired, report that branch's own lines verbatim instead (worktree and branch were left in place, not an error). Plus, separately, one line whenever the main-refresh below did not land — that step's own skip line verbatim, or the pull's own error. Neither refresh outcome is a failure of this step, but both leave `$MAIN` behind the remote — and on that skip path no fetch runs at all, so the local `origin/$DEFAULT_BRANCH` ref is stale too and cannot be compared against (matters for the post-merge plugin release, `docs/plugin-release.md` step 1).
 
 ## Dev-flow journal (step 8.5)
 
-Append one block to `~/.claude/state/dev-flow-journal.md` by piping it into `lib/journal_append.py` (it creates the dir) — never a shell redirect, `cat`, `tee` or the Write tool onto that path: in a session whose cwd is another repo, Claude Code asks before such a write with a non-persistable "Allow once" (observed on 2.1.295, auto mode; the denial named the `.claude` path a sensitive file, and `permissions.additionalDirectories` did not lift it). The script opens the file itself, so the command never names it — the same auto-mode probe ran this step's command shape with 0 denials (one-line body). Keep `.claude/state` paths out of the entry text too: the auto-mode check reads the whole command, heredoc body included, and that case was not measured. Auto mode only: in `default` mode the block still prompts (the heredoc and the braced plugin-root variable are not statically verifiable), as the old one did. Use values already known this run — no new instrumentation except the two read-only transcript readers, `~/.claude/local-marketplace/simo-dev/lib/session_tokens.py` (token sum) and `~/.claude/local-marketplace/simo-dev/lib/session_meta.py` (model/effort). Unknown values → `n/a`.
+The journal is a view of the task's flow events (`lib/flow_telemetry.py`, events in `~/.claude/state/dev-flow/<task-id>.jsonl`). This step adds the task's `outcome` event, which also attributes the task's tokens from its sessions' transcripts (main thread plus `subagents/agent-*.jsonl`, four categories, deduped by `message.id`, split per step into `by_step`: the step model of `docs/canonical-flow.md` "Dev-flow journal & knowledge harvest"), rewrites `~/.claude/state/dev-flow-journal.md` whole from every task file, and clears the session's task ID: the flow stays on, and a later `task-intake` mints a new ID. No command names the journal path, so no `.claude` write prompt fires (the script opens the file itself).
+
+The three `outcome` summary fields are written by you, short and factual — never prompt text, code or a diff:
+- `task` — type and rough size (e.g. `feat, 8 tasks across 22 files`);
+- `friction` — concrete problems hit in this task, or `none`;
+- `notes` — a 1-2 line takeaway, with no token totals: the `attribution` event written right after holds them, and a number read earlier (e.g. from a dashboard run mid-task) is lower than the final one.
+
+Substitute every `<…>` as a literal (shell state does not survive between Bash calls). The three summaries go inside **single** quotes — backticks and `$` inside double quotes would run as shell — with a `'` inside one written as `’`:
 
 ```bash
-DATE=$(date -u +%Y-%m-%d)
-# Each block that runs a plugin script re-binds R: shell state does not survive between
-# Bash calls. This file reaches a shell through the Read tool, which substitutes nothing, so the
-# placeholder arrives raw and the shell expands it — empty in the Bash tool env as measured, so
-# the binding lands on the source tree. A value exported into that env naming a real directory
-# would win instead. Either way the pin belongs to rendered SKILL.md bodies, not to this one.
-# Without the binding the python3 calls below run against /lib/... and exit rc 2.
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-# repo name, stable from any worktree (--git-common-dir points at the main checkout).
-# Substitute the main checkout's absolute path as a LITERAL — not `$MAIN`, which was set in a
-# different fenced block and is empty here (shell state does not survive between Bash calls),
-# and not a bare call: by this point the task worktree is normally removed (a desktop-app one is
-# left in place), so a bare call from an unlinked cwd dies with "Unable to read current working directory".
-REPO=$(basename "$(dirname "$(git -C "<main-checkout-abs>" rev-parse --path-format=absolute --git-common-dir)")")
-BRANCH="<the merged branch name>"      # may already be deleted
-# skills actually fired this task (PostToolUse Skill logger catches auto-fires).
-# Session id is the primary key; repo+branch is the key for sessions whose cwd IS
-# the task worktree (start_session children, terminal-launched, unattended headless callers).
-# Deliberately unbounded in time — see the KNOWN LIMIT in lib/skill_log.py: if
-# this session already ran an earlier task, its skills leak in. Sanity-check the
-# result against what you actually did this task before writing the block.
-SKILLS=$(python3 "$R/lib/skill_log.py" read --session "$CLAUDE_CODE_SESSION_ID" --repo "$REPO" --branch "$BRANCH")
-[ -z "$SKILLS" ] && SKILLS="n/a"
-# flow path actually taken (from the skill logger):
-if printf '%s\n' "$SKILLS" | grep -q 'simo-dev:grill-me'; then MODE=grill-me
-else MODE=direct; fi
-# output_tokens main+subagents (best-effort; needs $CLAUDE_CODE_SESSION_ID) — use the "total=".
-# NO `2>/dev/null`: rc 3 means the script itself crashed and the traceback on stderr is the
-# only diagnosis. Whenever the script runs at all, stdout carries one parseable line, so the
-# redirect bought nothing and hid everything (2026-08-18: a non-object transcript line crashed
-# it, and the journal recorded a `tokens: unknown` that read as "transcript not found").
-# rc 0 = total computed | 4 = nothing to count (no session id, or no main transcript) |
-# 3 = internal error. An EMPTY $TOKENS is the third case and must be read BEFORE the rc:
-# it means python never reached the module, so the rc is not one of ours — observed 2 when it
-# cannot open the file (the wrong-$R case this file already warns about above),
-# 1 on a syntax error, 127 with no usable python3. That collision is why "nothing to count"
-# is 4 and not 2. The guard below quotes the actual rc, so an unlisted one still shows up.
-TOKENS=$(python3 "$R/lib/session_tokens.py"); TOKENS_RC=$?
-# `if`, not `[ … ] && …`: the short form exits 1 whenever $TOKENS is non-empty, i.e. on the
-# normal path, which would read as a failed block if nothing followed it.
-if [ -z "$TOKENS" ]; then TOKENS="(script did not run — rc $TOKENS_RC, check \$R)"; fi
-# model/effort from the main transcript's last assistant turn (lib/session_meta.py) — the
-# transcript records both, no env var does. Same no-`2>/dev/null` and empty-stdout reasoning
-# as TOKENS above; any failure leaves an honest `unknown`, never a guess.
-META=$(python3 "$R/lib/session_meta.py"); META_RC=$?
-if [ -z "$META" ]; then META="(script did not run — rc $META_RC, check \$R)"; fi
-MODEL="unknown"; EFFORT="unknown"
-if [ "$META_RC" -eq 0 ]; then
-  MODEL=$(printf '%s\n' "$META" | sed -n 's/^model=\([^ ]*\) effort=.*/\1/p')
-  EFFORT=$(printf '%s\n' "$META" | sed -n 's/^model=[^ ]* effort=\([^ ]*\).*/\1/p')
-  MIXED=$(printf '%s\n' "$META" | sed -n 's/.* (mixed: \(.*\))$/ (mixed: \1)/p')
-  if [ -z "$MODEL" ]; then
-    MODEL="unknown (unparseable: $META)"; EFFORT="$MODEL"
-  else
-    MODEL="$MODEL$MIXED"
-    case "$EFFORT" in ""|unknown) EFFORT="unknown (not recorded on last turn)";; esac
-  fi
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+TASK="<the task-id: line the cleanup block printed, empty if none>"
+[ -n "$TASK" ] || TASK=$(python3 "$R/lib/flow_telemetry.py" current --session "$CLAUDE_CODE_SESSION_ID" --cwd "<main-checkout-abs>")
+echo "TASK=$TASK"
+if [ -z "$TASK" ]; then
+  echo "journal: no task id for this session or worktree — nothing recorded"
 else
-  NOTE=$(printf '%s\n' "$META" | sed -n 's/.*(\(.*\))$/\1/p'); [ -n "$NOTE" ] || NOTE="rc $META_RC"
-  MODEL="unknown ($NOTE)"; EFFORT="unknown ($NOTE)"
+  python3 "$R/lib/flow_telemetry.py" event --type outcome --task "$TASK" --field result=merged --field mr='<mr-url>' --field task='<type + rough size>' --field friction='<concrete issues, or none>' --field notes='<1-2 line takeaway>' \
+    && python3 "$R/lib/flow_telemetry.py" render \
+    && { python3 "$R/lib/flow_telemetry.py" close --session "$CLAUDE_CODE_SESSION_ID" || echo "journal: no session flag to clear (the task was seen through the marker) — fine"; }
+  python3 "$R/lib/flow_dashboard.py" || echo "dashboard: not regenerated (rc $?) — run lib/flow_dashboard.py by hand"
 fi
-# Print them: shell state dies with this Bash call, so anything not on stdout is unreadable
-# by the time the block below gets written — and that block BRANCHES on $TOKENS_RC, which is
-# a decision, not a transcription. Keep this the last command so the block's own rc is
-# printf's 0. DATE, REPO, MODE and SKILLS are printed too, since the quoted heredoc of the
-# write block below expands nothing.
-printf 'DATE=%s\nREPO=%s\nMODE=%s\nSKILLS=%s\nTOKENS=%s\nTOKENS_RC=%s\nMODEL=%s\nEFFORT=%s\nMETA=%s\n' "$DATE" "$REPO" "$MODE" "$SKILLS" "$TOKENS" "$TOKENS_RC" "$MODEL" "$EFFORT" "$META"
 ```
 
-Block format (append verbatim; the script adds the blank line before the heading):
+The last line regenerates the HTML dashboard (`lib/flow_dashboard.py`, `docs/canonical-flow.md` "Dev-flow journal & knowledge harvest") from every task file, this task's new `outcome` and `attribution` included. It sits outside the `&&` chain on purpose: a failed regeneration never keeps the task ID from being cleared, and a chain that stopped early still leaves a fresh page. Like the journal, the script opens its output file itself, so no `.claude` write prompt fires.
 
-```
-## $DATE · $REPO · $BRANCH · mode=$MODE
-- ticket: <KEY or "none">
-- task: <one line: type + rough size>
-- model: <the printed MODEL, verbatim — the block already turns every non-zero META_RC into `unknown (<reason>)`; never a bare `unknown`>
-- effort: <the printed EFFORT, verbatim — `unknown (not recorded on last turn)` when the last turn carried none; never a bare `unknown`>
-- tokens: <$TOKENS_RC 0 → the `total=` from $TOKENS followed by its parenthesised note verbatim, e.g. `813274 (15 subagent transcripts, 578 lines skipped)`; otherwise `unknown (<the parenthesised note from $TOKENS>)`, never a bare `unknown`>
-- skills used: <$SKILLS>
-- review-loop iterations: <count, or "n/a">
-- post-MR auto-fixes: <count of fix-commits this skill applied>
-- pipeline passed first try: <yes|no>
-- problems/friction: <concrete issues hit this task — or "none">
-- notes: <1-2 lines qualitative takeaway>
-```
+Once the outcome is recorded, end the step's report with one line: `Task closed. New work is cheaper in a new session: this one rewrites its whole context after an hour idle.`
 
-An honest `unknown` beats a fake datapoint. `model` and `effort` are auto-derived from the main transcript's last assistant turn by `session_meta.py` — `unknown (<reason>)` when it found nothing or failed, with a ` (mixed: …)` suffix on `model` when the session switched models; unlike `- tokens:`, the block already made every decision, so those two lines are pure transcription. `tokens` is auto-derived (on a plain non-SDD task it records the main thread only and says `subagents not captured`). When the script runs at all it leaves one parseable line on stdout whatever the rc, and the note in its parentheses is what makes the `unknown` say why: `4` is "nothing to count" (no session id, or no main transcript), `3` is the script itself crashing — a bug to fix, not a missing transcript. An empty `$TOKENS` is the case the rc cannot describe, because python never reached the module: the guard above turns it into its own note rather than letting it read as one of the other two.
+The chain stops at the first failure, so the task ID is cleared only once the outcome is recorded. An `event` refused with rc 2 names the field (too long, a newline in a one-line field, a field the type does not take): fix it and re-run the block with `TASK` set to the printed `TASK=` value. When `event` succeeded and a later command failed, re-run only the commands from the failed one on (with the same `TASK`): re-running the `event` adds a second `outcome`. The `outcome` event attributes the task itself, so no close can skip it; a warning `attribution failed` there leaves the outcome recorded and names the command to re-run (`attribute --task`, then `render`, since the chain has already rendered the journal without it). It prints `attribution: total=<n> cost=$<c> (<note>)`, `<c>` the estimated list-price cost, each record at its own model's price (`lib/transcript_usage.py` `PRICES`; the note counts the models not priced exactly: an unknown one, priced as the fallback, or fast mode, at standard rates); a `sessions without transcript` note means a session of this task left no transcript here (another machine, or pruned), so the total is a floor. Model and effort are no longer recorded: the last turn's value was a guess about the whole task.
 
-The `N lines skipped` clause counts transcript lines that reached no total: non-JSON, JSON that is not an object, and a non-integer `output_tokens`. It is a coarse signal, not an alarm — the subagent glob is deliberately wide and also matches captured tool output, so a healthy session reports hundreds (the run that produced this contract: 578 skipped, 15 transcripts, all correct). A record with a `usage` object and no `output_tokens` key is a normal record and is not counted, so a drop can also happen without the number moving. Read it as "something in this session's files was not transcript-shaped", and compare it against past entries rather than against zero.
-
-Write the block with the command below, every `<…>` and every `$VAR` of the block format replaced by the literal the first block printed or a value known this run (`<BRANCH>`, ticket, task, …) — shell state from that block is gone, and the quoted heredoc expands no `$VAR`. rc 4 = empty entry refused, nothing written; rc 2 = the script never ran (check `$R`).
-
-```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/journal_append.py" <<'EOF'
-## <DATE> · <REPO> · <BRANCH> · mode=<MODE>
-- ticket: <…>
-<…remaining lines of the block format…>
-EOF
-```
-
-After writing the block, prune this task's entries from the skill log. Self-contained
+After the journal step, prune this task's entries from the TSV skill log (it stays: it is the hook-liveness probe `lib/review_marker.py` reads). Self-contained
 — shell state does not survive between Bash calls, so re-derive the values. Prune
 only removes repo+branch matches (task-specific); session-keyed lines are left
 behind on purpose, because a session can cover two interleaved tasks. It reports
@@ -236,7 +202,7 @@ a look when the task ran terminal-launched, headless, or as a start_session chil
 where a `0` usually means an unsubstituted `BRANCH` placeholder:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 REPO=$(basename "$(dirname "$(git -C "<main-checkout-abs>" rev-parse --path-format=absolute --git-common-dir)")")   # literal path, see above
 BRANCH="<the merged branch name>"
 python3 "$R/lib/skill_log.py" prune --repo "$REPO" --branch "$BRANCH"
@@ -247,7 +213,7 @@ python3 "$R/lib/skill_log.py" prune --repo "$REPO" --branch "$BRANCH"
 Runs after the journal. Skip entirely when step 8 printed no `post-merge:` line (no `KEY`). The worktree is gone by now (a desktop-app worktree is left in place, see Worktree cleanup), so reuse `<KEY>`, `<PREFIX>` and `<TARGET>` as literals from that line:
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/tracker_config.py" run "<PREFIX>" next_subtask_cmd "<KEY>" --resolved-at "<TARGET>" || echo "WARNING: next_subtask_cmd failed for <KEY> (continuing)"
 ```
 
@@ -257,7 +223,7 @@ python3 "$R/lib/tracker_config.py" run "<PREFIX>" next_subtask_cmd "<KEY>" --res
 2. **Parent close** — `parent_complete` true and `parent_status` not already at/past Done (or Closed) → y/N gate, default N: name the parent, say every sub-task is Done and ask whether the feature was verified as a whole and the parent should be closed (a per-sub-task check does not confirm the parts work together). On `y`, `<PARENT>` = the JSON's `parent`:
 
    ```bash
-   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+   R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
    python3 "$R/lib/tracker_config.py" run "<PREFIX>" transition_cmd "<PARENT>" "Done" --clear-blocked || echo "WARNING: transition_cmd failed for <PARENT> -> Done (continuing)"
    ```
 
@@ -265,8 +231,8 @@ python3 "$R/lib/tracker_config.py" run "<PREFIX>" next_subtask_cmd "<KEY>" --res
 3. **Next sub-task** — non-empty `ready` → resolve the repo for the first entry: the directories next to the main checkout (`dirname <main-checkout-abs>`) whose name appears as a whole word, case-insensitive, in the entry's `summary` or `components`, and that are a git checkout root (`git -C <dir> rev-parse --show-toplevel` resolves to the same directory as `<dir>` — compare directories, not strings: it resolves symlinks); exactly one match → that path, otherwise unresolved. Then a y/N gate, default N, showing the parent, the entry's key and summary, the resolved repo path (or "unresolved"), plus one line with the other `ready` keys and one line summarising `pending` as `key (reason)`. On `y`:
    - repo unresolved → ask the user for the repo root first;
    - `mcp__ccd_session__start_session` not yet callable → run `ToolSearch` `select:mcp__ccd_session__start_session` once before the fork below, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available;
-   - `mcp__ccd_session__start_session` available → `initiation` `user_asked` (the `y` above); `context` `fresh`; `use_worktree` `true`; `source_branch` that repo's base branch `<base-branch>`: its short name with `origin/` stripped (`git -C <repo-root> symbolic-ref --quiet --short refs/remotes/origin/HEAD`), passed only when that resolves and exists as a local branch (`git -C <repo-root> rev-parse --verify --quiet "refs/heads/<base-branch>"`; `start_session` takes an existing local branch only), else omit it; `title` `Intake <key>`; `background` one paragraph (≥80 chars: parent, sibling just merged, what this sub-task covers); `cwd` the resolved repo root when it is not this session's project (a real repo root, never a subdirectory), omitted otherwise; `prompt` = the spawned-task marker line (session language, same rule as `simo-dev:task-intake`'s `lib/handoff-spawn.md`, first sub-bullet of its `prompt` bullet), then an instruction to run `simo-dev:task-intake <key>`, the parent key, and the just-merged sibling key and MR URL as context;
-   - not available → print `simo-dev:task-intake <key>` for the user to start by hand.
+   - `mcp__ccd_session__start_session` available → `initiation` `user_asked` (the `y` above); `context` `fresh`; `use_worktree` `true`; `source_branch` that repo's base branch `<base-branch>`: its short name with `origin/` stripped (`git -C <repo-root> symbolic-ref --quiet --short refs/remotes/origin/HEAD`), passed only when that resolves and exists as a local branch (`git -C <repo-root> rev-parse --verify --quiet "refs/heads/<base-branch>"`; `start_session` takes an existing local branch only), else omit it; `title` `Intake <key>`; `background` one paragraph (≥80 chars: parent, sibling just merged, what this sub-task covers); `cwd` the resolved repo root when it is not this session's project (a real repo root, never a subdirectory), omitted otherwise; `prompt` = the spawned-task marker line (session language, same rule as `simo-dev:task-intake`'s `lib/handoff-spawn.md`, first sub-bullet of its `prompt` bullet), then an instruction to run `simo-dev:task-intake <key>`, the parent key, the just-merged sibling key and MR URL as context, and the line `parent task: <TASK>` (`docs/canonical-flow.md` "Parent task"), `<TASK>` being the `TASK=` value step 8.5 printed — `close` already cleared the session's task, so `current` prints nothing here; empty → no line;
+   - not available → print `simo-dev:task-intake <key>` for the user to start by hand, and the same `parent task:` line on its own line after it, to paste with the command.
 4. **Only pending** — empty `ready`, not complete → one line listing `pending` as `key (reason)`.
 
 Example (hypothetical keys): after `PROJ-12` merges at `Ready for Testing`, a JSON with `"ready": [{"key": "PROJ-13", ...}]` and `"pending": [{"key": "PROJ-14", "reason": "blocked-by:PROJ-13"}]` offers one session start for `PROJ-13` and mentions `PROJ-14 (blocked-by:PROJ-13)`.
@@ -278,7 +244,7 @@ Runs last, once step 8.6 has fully resolved — after the user answered its y/N 
 Look the repo's release skill up from the main checkout (`<main-checkout-abs>` as a literal, the same one the cleanup used — the task worktree is normally gone):
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/repo_config.py" get --repo "<main-checkout-abs>" release_skill
 ```
 
@@ -290,6 +256,6 @@ python3 "$R/lib/repo_config.py" get --repo "<main-checkout-abs>" release_skill
 Configure it once per repo, from any checkout or by repo-id (`docs/canonical-flow.md` "Configuring per-repo settings"):
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/repo_config.py" set git.example.com/team/app release_skill my-plugin:my-release
 ```

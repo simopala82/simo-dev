@@ -13,9 +13,8 @@ exits 0 on success. On failure (missing argument, unresolvable forge) prints a
 message to stderr and exits 1 -- this is a deliberate contract CHANGE from the bash
 predecessor (approved design, Decision 1): the bash version was `source`d and
 `export`ed FORGE/SLUG/API_HOST into the caller's shell, which a Python subprocess
-cannot do. The caller (mr-followup/SKILL.md) now captures this stdout line instead,
-matching the plugin's existing dominant idiom for cross-Bash-call values (see
-`check_mr_state.py`'s plain-string stdout).
+cannot do. Its callers are now Python (lib/mr_create.py and lib/mr_followup.py import
+detect()); the stdout line stays for a manual run.
 """
 from __future__ import annotations
 

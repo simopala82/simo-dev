@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Use whenever committing changes to git — phrases: "commit", "save the work". Always invoke this skill, never run `git commit` directly. Auto-cascades: knowledge harvest → review-loop pre-flight → commit → push → MR body generation → MR creation → mr-followup, unconditional (no gate), parking before the merge. Opt-out for WIP commits: `--no-mr` arg or `DEV_COMMIT_NO_MR=1`. Optional `--target <branch>` overrides the MR target and the review-loop base (default: an auto-detected stacked parent branch, else the repo default branch). On protected branches (master/main/develop — out-of-flow fallback) the cascade is replaced by mermaid preview + a single commit+push confirmation, no MR. Optional ticket scope arg. Fourth step of the canonical task flow.
+description: Use for every commit while the simo-dev flow is active — phrases: "commit", "save the work" — never a direct `git commit` there; outside the flow, only when the user asks for it by name. Auto-cascades: knowledge harvest → review-loop pre-flight → commit → push → MR body generation → MR creation → mr-followup, unconditional (no gate), parking before the merge. Opt-out for WIP commits: `--no-mr` arg or `DEV_COMMIT_NO_MR=1`. Optional `--target <branch>` overrides the MR target and the review-loop base (default: an auto-detected stacked parent branch, else the repo default branch). Optional `--draft` / `--no-draft` opens the MR/PR as Draft or forces it not to (default: Draft only when a plan the branch adds declares `**MR draft:** yes`). On protected branches (master/main/develop — out-of-flow fallback) the cascade is replaced by mermaid preview + a single commit+push confirmation, no MR. Optional ticket scope arg. Fourth step of the canonical task flow.
 ---
 
 # Dev Commit
@@ -8,7 +8,7 @@ description: Use whenever committing changes to git — phrases: "commit", "save
 Fourth step of the canonical task flow:
 `simo-dev:task-intake → simo-dev:plan-execute → simo-dev:review-loop → simo-dev:commit → simo-dev:mr-followup`
 
-Arguments: optional ticket ID (commit scope); optional `--no-mr` flag (commit + push only); optional `--target <branch>` (MR target branch and base for steps 0.5/7/9, passed on to review-loop at step 1 and recorded for mr-followup at step 7; omitted → a stacked parent branch is auto-detected, else the repo default branch).
+Arguments: optional ticket ID (commit scope); optional `--no-mr` flag (commit + push only); optional `--target <branch>` (MR target branch and base for steps 0.5/7/9, passed on to review-loop at step 1 and recorded for mr-followup at step 7; omitted → a stacked parent branch is auto-detected, else the repo default branch); optional `--draft` (create the MR/PR as Draft — also set by a plan's `**MR draft:** yes` header, see `simo-dev:plan-write`) or `--no-draft` (force a non-Draft MR and skip the plan check — the way out when step 7's WARNING names another task's plan); both omitted → unchanged, both passed on to review-loop at step 1.
 
 MR creation is gate-free, same as push to the feature branch. The merge (the one hard gate left in the publish path) lives outside this skill, run manually by the user after `simo-dev:mr-followup` parks.
 
@@ -16,7 +16,7 @@ MR creation is gate-free, same as push to the feature branch. The merge (the one
 
 ## Steps
 
-**Every Bash block below that touches git re-binds `W="<absolute path of the task worktree>"` as its first line, and every block that runs a plugin script re-binds `R` the same way.** Shell state does not survive between Bash calls, so a `W` or `R` bound in an earlier step is already gone; and the Bash cwd does NOT follow the worktree, so a bare `git` resolves whichever repo the session happens to sit in. `R` resolves the released cache dir when the harness substituted one that still exists, and the source tree otherwise. A forgotten binding leaves `"$R/lib/…"` as an absolute `/lib/…` path: of the sites in this file, the `python3` calls exit rc `2`; the two that assign `G` convert that same state into a STOP from their own `[ -f "$G" ]` test — step 0.5's `check_base_freshness.py` at rc `4`, step 5's `check_mr_state.py` at rc `2`. Both echo the resolved path, and both read a `/lib/…` root as "re-issue this block" rather than as a broken plugin. Bind it in every block. Step 1 certifying coverage for `$W` while step 4 stages the *cwd* repo's diff is precisely the unreviewed-commit outcome this guard exists to prevent (measured 2026-08-04).
+**Every Bash block below that touches git re-binds `W="<absolute path of the task worktree>"` as its first line, and every block that runs a plugin script re-binds `R` the same way.** Shell state does not survive between Bash calls, so a `W` or `R` bound in an earlier step is already gone; and the Bash cwd does NOT follow the worktree, so a bare `git` resolves whichever repo the session happens to sit in. `R` resolves the released cache dir when the harness substituted one that still exists, and otherwise the source tree, or — on an install that has none, such as the public export — the highest simo-dev version under `~/.claude/plugins/cache/`. A forgotten binding leaves `"$R/lib/…"` as an absolute `/lib/…` path: of the sites in this file, the `python3` calls exit rc `2`; the two that assign `G` convert that same state into a STOP from their own `[ -f "$G" ]` test — step 0.5's `check_base_freshness.py` at rc `4`, step 5's `check_mr_state.py` at rc `2`. Both echo the resolved path, and both read a `/lib/…` root as "re-issue this block" rather than as a broken plugin. Bind it in every block. Step 1 certifying coverage for `$W` while step 4 stages the *cwd* repo's diff is precisely the unreviewed-commit outcome this guard exists to prevent (measured 2026-08-04).
 
 ### 0. mark_chapter
 
@@ -28,7 +28,7 @@ Skip on protected branches (they take the Protected-Branch Path). Otherwise run,
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 G="$R/lib/check_base_freshness.py"
 [ -f "$G" ] || { echo "STOP: guard unreachable at $G"; exit 4; }
 git -C "$W" fetch origin --prune --quiet
@@ -37,33 +37,11 @@ BASE=$(python3 "$R/lib/build_mr_ctx.py" --repo "$W" --target "$TARGET_ARG" --pri
 python3 "$G" --repo "$W" --base "$BASE"
 ```
 
-`<base>` below is the same target step 7 will use (`--target` arg → stacked parent → repo default), so a stacked branch is checked against, and on rc `1` rebased onto, its parent rather than the default branch. An empty `BASE` (no `origin/HEAD`) makes the guard fall back to `origin/main|master`. rc `5` is the `BASE=` line's own STOP, not the guard's — never "recover as below"; it follows step 7's rc 2/3 handling (**MR target**). A `note:` printed by the `BASE=` line names a remote branch that shares commits with this one but diverged (a parent that advanced after the fork, or a branch stacked on this one): relay it, and ask here — the one place it is asked — whether this branch is stacked on the named branch; a yes sets `TARGET_ARG` to it for the rest of the run, step 7 included, and re-runs this whole block with it set — the guard above ran against the default branch, so act on the re-run's rc, not the first one's. If the guard then returns rc `1`, ask that question BEFORE the park: parking onto the default branch rewrites the parent's commits into this branch. Under `simo-dev:afk`, a `note:` followed by guard rc `1` stops (no park) and is recorded in the afk summary; a `note:` with guard rc `0` is recorded and the run continues.
+`<base>` below is the same target step 7 will use (`--target` arg → stacked parent → repo default), so a stacked branch is checked against, and on rc `1` rebased onto, its parent rather than the default branch. An empty `BASE` (no `origin/HEAD`) makes the guard fall back to `origin/main|master`. rc `5` is the `BASE=` line's own STOP, not the guard's — never "recover as below"; it follows step 7's `STOP: target:` handling (**MR target**). A `note:` printed by the `BASE=` line names a remote branch that shares commits with this one but diverged (a parent that advanced after the fork, or a branch stacked on this one): relay it, and ask here — the one place it is asked — whether this branch is stacked on the named branch; a yes sets `TARGET_ARG` to it for the rest of the run, step 7 included, and re-runs this whole block with it set — the guard above ran against the default branch, so act on the re-run's rc, not the first one's. If the guard then returns rc `1`, ask that question BEFORE the park: parking onto the default branch rewrites the parent's commits into this branch. Under `simo-dev:afk`, a `note:` followed by guard rc `1` stops (no park) and is recorded in the afk summary; a `note:` with guard rc `0` is recorded and the run continues.
 
-Deterministic stale-base check (incidents 2026-07-24): STOPs only when `origin/<base>` advanced beyond the branch's fork point **and** the advanced commits touch files this branch also changes — the branch would revert merged work. rc `1` → **stop**, surface the printed overlap + guidance, do not proceed, then recover as below. rc `0` (safe / benign disjoint advance) or `2` (git error — never a false stop) → continue. rc `4` → **stop**, nothing was checked: the resolved path does not exist. `R` resolves the released cache dir while that directory exists, and a released snapshot has not been observed half-written, so the rc `1` reading from a file caught mid-write is not expected from there — it returns once the cache dir is gone and `R` has fallen back to the source working tree. One carve-out, from `docs/plugin-release.md`: a release run from a worktree leaves the claimed cache dir holding *worktree* content, with no version mismatch to signal it, so just after one of those the cache is not a clean snapshot either. rc `4` means the root `R` actually resolved to lacks `lib/check_base_freshness.py` — nothing more: once `[ -d "$R" ]` succeeds the fallback tree is never consulted, so a present-but-incomplete cache dir reaches rc `4` with the source tree intact beside it. What no longer reaches it is a *deleted* cache dir, which `[ -d "$R" ]` routes past (worth logging in a personal notes file if you keep one — section "Releasing a plugin kills the hooks of every already-open session" in the author's own, by title since sections get renumbered). Read the path the message echoes before acting on it: a `/lib/…` root means the `R=` line above was omitted from the block you ran, so re-issue the whole block rather than restarting — restarting rebinds nothing a re-issue would not. Any other root is the plugin dir itself being incomplete, and there restart the session: this step lives in a rendered body, which already carries the substituted path as literal text before any shell runs, so unsetting the variable changes nothing here. Without the `[ -f "$G" ]` test that same state returns rc `2`, which this step reads as continue.
+Deterministic stale-base check (incidents 2026-07-24): STOPs only when `origin/<base>` advanced beyond the branch's fork point **and** the advanced commits touch files this branch also changes — the branch would revert merged work. rc `1` → **stop**, surface the printed overlap + guidance, do not proceed, then recover as below. rc `0` (safe / benign disjoint advance) or `2` (git error — never a false stop) → continue. rc `4` → **stop**, nothing was checked: the resolved path does not exist. `R` resolves the released cache dir while that directory exists, and a released snapshot has not been observed half-written, so the rc `1` reading from a file caught mid-write is not expected from there — it returns once the cache dir is gone and `R` has fallen back to the source working tree (an install with no source tree falls back to another released cache dir instead). One carve-out, from `docs/plugin-release.md`: a release run from a worktree leaves the claimed cache dir holding *worktree* content, with no version mismatch to signal it, so just after one of those the cache is not a clean snapshot either. rc `4` means the root `R` actually resolved to lacks `lib/check_base_freshness.py` — nothing more: once `[ -d "$R" ]` succeeds the fallback tree is never consulted, so a present-but-incomplete cache dir reaches rc `4` with the source tree intact beside it. What no longer reaches it is a *deleted* cache dir, which `[ -d "$R" ]` routes past (worth logging in a personal notes file if you keep one — section "Releasing a plugin kills the hooks of every already-open session" in the author's own, by title since sections get renumbered). Read the path the message echoes before acting on it: a `/lib/…` root means the `R=` line above was omitted from the block you ran, so re-issue the whole block rather than restarting — restarting rebinds nothing a re-issue would not. Any other root is the plugin dir itself being incomplete, and there restart the session: this step lives in a rendered body, which already carries the substituted path as literal text before any shell runs, so unsetting the variable changes nothing here. Without the `[ -f "$G" ]` test that same state returns rc `2`, which this step reads as continue.
 
-**rc `1` recovery.** Leaving the work committed is not an option here — steps 0.7, 1, 3 and 4 all read the working diff — so park it in a throwaway commit, rebase, put it back. Announce the park; never park silently.
-
-```bash
-W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-git -C "$W" fetch origin --prune --quiet
-TARGET_ARG="<the --target skill arg, or empty>"
-BASE=$(python3 "$R/lib/build_mr_ctx.py" --repo "$W" --target "$TARGET_ARG" --print-target) || { echo "STOP: could not resolve the base branch (stderr above)." >&2; exit 5; }
-python3 "$R/lib/park_and_rebase.py" park --repo "$W" --base "$BASE"
-# rc 3 → resolve, then continue WITH the hook suppression (a bare `--continue` is a fresh
-#   git process, re-runs prepare-commit-msg and rewrites the park subject), NEVER `--skip`:
-#   git -C "$W" -c core.hooksPath=/dev/null rebase --continue
-# then, re-binding both — the `--continue` above is a separate Bash call, so W and R are gone by
-# here, and an unbound R makes this exit rc 2, which is indistinguishable from the "refused, tree
-# untouched" verdict below while the park commit is in fact still at HEAD:
-W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/park_and_rebase.py" restore --repo "$W"
-```
-
-`park`: rc `0` → rebased, run `restore`. rc `3` → parked, rebase conflicted; resolve, `--continue`, then `restore`. rc `4` → nothing left to restore. rc `5` → **the repo changed and needs attention** (an unfinished rebase, a park commit whose record could not be written or removed, or a park still at `HEAD` under a rewritten subject) — read the message, it carries the recovery command. rc `2` → refused, repo unchanged; reason printed, from several sources. `restore`: rc `0` restored — **read its stderr even so**, since nothing may fail once the reset has landed, so a path it could not re-stage is reported there and not by the code; rc `2` refused with the tree untouched — it resets only when `read_record` finds the record usable, `HEAD` is still the park commit, and the branch still carries the commits the rebase was expected to keep, so a `git rebase --skip` (which git itself suggests at a conflict) is caught instead of leaving a clean-looking tree; that count under-predicts the drops a rebase makes legitimately, so it errs toward stopping and `--allow-dropped` is the way through once the reflog says which happened. `restore` also hands back the pre-park modification time for every parked path whose content is byte-identical, and reports on stderr how many it restored, how many the rebase changed and how many it could not read — so the rebase alone no longer invalidates the step-1 pre-flight, and a path it reports as changed really did change. Then re-run the guarded block at the top of this step — not a bare `python3 …/check_base_freshness.py`, which drops the `[ -f ]` test in the window a release is most likely to land — and continue into step 0.7, then step 1, which re-checks the review marker against the restored files. The park does **not** preserve the index/worktree split — staged paths are re-staged, content merged, and any it could not re-stage are named — so work that must survive byte-exact on both sides does not belong in a park.
-
-Rejected alternatives, both measured: `git stash` (logged in the author's own notes, §17 — worth keeping a similar log) and hand-clearing with `git checkout -- <file>`, which restores nothing at all from a mixed pathspec list and, run in the **main checkout** on a **tracked** path under `~/.claude`, writes through to another session's uncommitted edit (CLAUDE.md, `~/.claude` symlink rule).
+**rc `1` recovery** (park the work, rebase, put it back; announce the park, never park silently): read `lib/failure-paths.md` "Step 0.5 rc 1: park, rebase, restore" and follow it, `park`/`restore` exit codes included.
 
 ### 0.7. Update documentation and memories
 
@@ -84,7 +62,7 @@ Deterministic check — a review already covers the files this commit will stage
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 T=$(mktemp /tmp/claude_commit_files.XXXXXX) || exit 1
 python3 "$R/lib/changed_files.py" --repo "$W" > "$T"; rc=$?
 FILES=()
@@ -98,13 +76,13 @@ python3 "$R/lib/review_marker.py" check --repo "$W" \
 fi
 ```
 
-`CLAUDE_CODE_SESSION_ID` holds the same value as the hook payload's `session_id`, so this reads the record written by the reviewer dispatched in **this** session. Passed unconditionally, not as `${VAR:+--session "$VAR"}`: the agent's shell is zsh, which does not word-split that expansion and would hand argparse one bogus argument. Unset or empty is safe anyway — no stored record can carry an empty session id, so it cannot match. `$W` is bound once and reused for `--repo` and for the listing call: deriving them separately from the process cwd let them resolve a *different* repo than the one being committed, which returned rc `0` on an empty file list and vouched for a repo nobody had reviewed (measured 2026-08-04). Same convention as `lib/build_mr_ctx.py` and `lib/check_base_freshness.py` — pass the worktree absolute path, never rely on the cwd. Both listings in this step come from `lib/changed_files.py`, the helper `hooks/review_loop_warn.py` uses too, and it only reads: porcelain `git diff` refreshes a stat-dirty entry and writes `.git/index` back through `index.lock` whatever `GIT_OPTIONAL_LOCKS` says (git 2.55.0, measured 2026-10-06), and in a shared checkout that lock collides with another session's `git add`/`commit`. The listing goes through a temp file, not `< <(...)`: a process substitution drops the helper's exit status, and an empty `FILES` makes `check()` return rc `0` — the review skipped on a listing that never ran. A failed listing prints `LISTING_FAILED` and exits rc `2` without calling `check()`, so the "every other non-zero rc" clause below covers it (`2`, not `3`: `3` triggers the skill-log retry). The list is read line by line into an array rather than passed as `--files $(git …)`: zsh field-splits an unquoted command substitution, so a changed `two words.txt` arrived as two arguments, both of which miss on disk — `check()` then had nothing left to compare and returned rc `0` for a file written after the review (measured 2026-08-04). The helper emits NUL-terminated paths (`-z` on both of its git listings), with `read -r -d ''` to match, for the same reason: git otherwise C-quotes a path holding a tab, a carriage return, a double quote, a backslash or a non-ASCII byte (`"caf\303\251.txt"`, quotes included), and that literal is neither on disk nor in the deletion set `_tracked_deletions` builds, so `check()` reports the list unusable and the repo can never be certified. `core.quotePath=false`, the earlier form, is not enough — it lifts quoting for non-ASCII bytes alone, where `-z` suppresses it outright: of six probes on git 2.55.0 the tab, carriage return, double quote and backslash still came back quoted from the non-`-z` listing, the space and the non-ASCII byte did not (measured 2026-08-16 — a sample, not the closed set). zsh 5.9, the agent's shell, honours `read -r -d ''` as a NUL delimiter (measured 2026-08-18). `--expect-skill-log simo-dev:commit` enables a liveness probe on both record-related failing paths — this skill's own hook entry missing from `~/.claude/state/dev-flow-skills.log` while **this session** logged other simo-dev skills fits two readings: this skill was never invoked in this session, or the hooks are not firing here. rc `0` → skip. rc `3` → invoke the `simo-dev:commit` Skill if this check was reached outside one — and **when in doubt, invoke it**: an agent running this body without a Skill-tool invocation is both the case the retry exists for and the case least able to tell, so the condition falls to the invoking side. `check` is read-only and the retry is bounded at one, so a needless invocation costs one Skill call, while skipping it reproduces the false stop. Then re-run the block **once**. One retry settles it because `PostToolUse` on `Skill` fires when the Skill tool returns: inside a real invocation the entry already exists and the retry can only confirm, so the answer changes exactly in the case where the pre-flight was reached without that invocation. rc `3` a second time → **stop** and act on the printed message, which names each observed cause with its own remedy; do not invoke `simo-dev:review-loop` there, which cannot write the marker while the hook that writes it is dead. Every other non-zero rc (reason printed) → invoke `simo-dev:review-loop` automatically (no gate prompt), passing `--target <TARGET_ARG>` when step 0.5 settled a non-empty `TARGET_ARG`, so review and MR share one base. Review-loop fails or leaves unresolved findings → stop, let the user decide.
+`CLAUDE_CODE_SESSION_ID` holds the same value as the hook payload's `session_id`, so this reads the record written by the reviewer dispatched in **this** session. Passed unconditionally, not as `${VAR:+--session "$VAR"}`: the agent's shell is zsh, which does not word-split that expansion and would hand argparse one bogus argument. Unset or empty is safe anyway — no stored record can carry an empty session id, so it cannot match. `$W` is bound once and reused for `--repo` and for the listing call: deriving them separately from the process cwd let them resolve a *different* repo than the one being committed, which returned rc `0` on an empty file list and vouched for a repo nobody had reviewed (measured 2026-08-04). Same convention as `lib/build_mr_ctx.py` and `lib/check_base_freshness.py` — pass the worktree absolute path, never rely on the cwd. Both listings in this step come from `lib/changed_files.py`, the helper `hooks/review_loop_warn.py` uses too, and it only reads: porcelain `git diff` refreshes a stat-dirty entry and writes `.git/index` back through `index.lock` whatever `GIT_OPTIONAL_LOCKS` says (git 2.55.0, measured 2026-10-06), and in a shared checkout that lock collides with another session's `git add`/`commit`. The listing goes through a temp file, not `< <(...)`: a process substitution drops the helper's exit status, and an empty `FILES` makes `check()` return rc `0` — the review skipped on a listing that never ran. A failed listing prints `LISTING_FAILED` and exits rc `2` without calling `check()`, so the "every other non-zero rc" clause below covers it (`2`, not `3`: `3` triggers the skill-log retry). The list is read line by line into an array rather than passed as `--files $(git …)`: zsh field-splits an unquoted command substitution, so a changed `two words.txt` arrived as two arguments, both of which miss on disk — `check()` then had nothing left to compare and returned rc `0` for a file written after the review (measured 2026-08-04). The helper emits NUL-terminated paths (`-z` on both of its git listings), with `read -r -d ''` to match, for the same reason: git otherwise C-quotes a path holding a tab, a carriage return, a double quote, a backslash or a non-ASCII byte (`"caf\303\251.txt"`, quotes included), and that literal is neither on disk nor in the deletion set `_tracked_deletions` builds, so `check()` reports the list unusable and the repo can never be certified. `core.quotePath=false`, the earlier form, is not enough — it lifts quoting for non-ASCII bytes alone, where `-z` suppresses it outright: of six probes on git 2.55.0 the tab, carriage return, double quote and backslash still came back quoted from the non-`-z` listing, the space and the non-ASCII byte did not (measured 2026-08-16 — a sample, not the closed set). zsh 5.9, the agent's shell, honours `read -r -d ''` as a NUL delimiter (measured 2026-08-18). `--expect-skill-log simo-dev:commit` enables a liveness probe on both record-related failing paths — this skill's own hook entry missing from `~/.claude/state/dev-flow-skills.log` while **this session** logged other simo-dev skills fits two readings: this skill was never invoked in this session, or the hooks are not firing here. rc `0` → skip. rc `3` → invoke the `simo-dev:commit` Skill if this check was reached outside one — and **when in doubt, invoke it**: an agent running this body without a Skill-tool invocation is both the case the retry exists for and the case least able to tell, so the condition falls to the invoking side. `check` is read-only and the retry is bounded at one, so a needless invocation costs one Skill call, while skipping it reproduces the false stop. Then re-run the block **once**. One retry settles it because `PostToolUse` on `Skill` fires when the Skill tool returns: inside a real invocation the entry already exists and the retry can only confirm, so the answer changes exactly in the case where the pre-flight was reached without that invocation. rc `3` a second time → **stop** and act on the printed message, which names each observed cause with its own remedy; do not invoke `simo-dev:review-loop` there, which cannot write the marker while the hook that writes it is dead. Every other non-zero rc (reason printed) → invoke `simo-dev:review-loop` automatically (no gate prompt), passing `--target <TARGET_ARG>` when step 0.5 settled a non-empty `TARGET_ARG`, so review and MR share one base, and `--draft` / `--no-draft` when this skill received one, so review-loop's "(1) skip → `simo-dev:commit`" re-invocation keeps it. Review-loop fails or leaves unresolved findings → stop, let the user decide.
 
-**Decide the review cap here, on both paths.** Judge it by the criterion in `simo-dev:review-loop` step 1.5 — prose with no executable content. Do not restate it here as an extension test: extensions are what step 1.5 abandoned. In this plugin the skill bodies this flow edits most are dense with runnable blocks, this file included (15 `bash` blocks, `mr-followup` 11, `task-intake` 11 — measured 2026-08-22, indented fences included), so the test is whether any changed line falls inside a fenced `bash`/`sh`/`python` block, in any file, whether or not the diff adds the fence itself. Re-derive the file list in this block rather than reading `FILES` from the previous one — shell state does not survive between Bash calls:
+**Decide the review cap here, on both paths.** Judge it by the criterion in `simo-dev:review-loop` step 1.5 — prose with no executable content. Do not restate it here as an extension test: extensions are what step 1.5 abandoned. In this plugin the skill bodies this flow edits most are dense with runnable blocks, this file included (10 `bash` blocks, `mr-followup` 18, `task-intake` 20 — measured 2026-11-25, indented fences included), so the test is whether any changed line falls inside a fenced `bash`/`sh`/`python` block, in any file, whether or not the diff adds the fence itself. Re-derive the file list in this block rather than reading `FILES` from the previous one — shell state does not survive between Bash calls:
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 T=$(mktemp /tmp/claude_commit_files.XXXXXX) || exit 1
 python3 "$R/lib/changed_files.py" --repo "$W" > "$T" || echo "LISTING_FAILED rc=$? — the list below is NOT empty-by-design"
 tr '\0' '\n' < "$T"; rm -f "$T"
@@ -114,25 +92,25 @@ The value is needed twice — on the review-loop invoke above when the pre-fligh
 
 ### 3. Compute commit message
 
-Conventional format. Ticket-in-context: (a) skill arg matches `^[A-Z][A-Z0-9]+-[0-9]+$`, OR (b) `W="<absolute path of the task worktree>"; R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; python3 "$R/lib/derive_ticket_key.py" "$(git -C "$W" branch --show-current)" --cwd "$W"` — both bindings spelled out rather than left to the block convention above, because either one missing fails quietly: an unbound `R` exits rc 2 with **empty stdout** and an unbound `W` makes `git -C ""` read the *ambient* repo at rc 0, and this step reads both as "no ticket in context" and commits an unscoped message (honors `DEV_FLOW_NO_TRACKER` / `.claude/no-tracker`; anchored match). A ticket key present → `<type>(<KEY>): <subject>`, else `<type>: <subject>`. `<type>` from the diff: `feat|fix|refactor|docs|test|chore`.
+Conventional format. Ticket-in-context: (a) skill arg matches `^[A-Z][A-Z0-9]+-[0-9]+$`, OR (b) `W="<absolute path of the task worktree>"; R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; python3 "$R/lib/derive_ticket_key.py" "$(git -C "$W" branch --show-current)" --cwd "$W"` — both bindings spelled out rather than left to the block convention above, because either one missing fails quietly: an unbound `R` exits rc 2 with **empty stdout** and an unbound `W` makes `git -C ""` read the *ambient* repo at rc 0, and this step reads both as "no ticket in context" and commits an unscoped message (honors `DEV_FLOW_NO_TRACKER` / `.claude/no-tracker`; anchored match). A ticket key present → `<type>(<KEY>): <subject>`, else `<type>: <subject>`. `<type>` from the diff: `feat|fix|refactor|docs|test|chore`.
 
 In-scope improvements (`docs/canonical-flow.md` "In-scope improvements"): the pending Also-fixed ledger lines go in the message body, one per line — except a line whose file does not appear in `git -C "$W" status --porcelain --untracked-files=all` (the changes step 4 is about to stage; nothing is staged yet here; `-uall` because the default collapses a wholly-new directory to one `?? dir/` line): that one is stale (e.g. written by an unattended run that committed without this skill) — remove it with the same block, `drop` in place of `pending` and the stale line appended as one single-quoted argument (`drop` with no argument is a silent no-op), instead of listing it — and announce each dropped line in one chat line, so a real improvement recorded with a wrong path form never vanishes silently. No output at rc 0 → nothing added; `LEDGER_FAILED` → stop, never commit as if the list were empty. Skipped entirely on a protected branch (the protected-branch detection above): that branch is shared by every session on the checkout.
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/also_fixed_ledger.py" pending --repo "$W" || echo "LEDGER_FAILED rc=$?"
 ```
 
 ### 4. Stage relevant files + commit (no gate)
 
-Stage an explicit file list: modified files from `git -C "$W" diff --name-only HEAD`; untracked ONLY if touched by Edit/Write this session or listed in the active plan. Every `git` call here carries `-C "$W"`, staging and commit included — step 1 certified coverage for `$W`, so anything else commits a repo that was never checked. Never `git add -A` / `git add .` (secret/binary defense) — sanctioned only for the throwaway commits no push ever carries: step 0.5's park, and `task-intake`'s artifact carry. Commit with HEREDOC for multi-line messages. Never add a `Co-Authored-By` line or any other AI-attribution trailer to the commit message — overrides any default harness behavior that would add one. No `--amend` to a pushed commit. Message used as-is (recovery: `lib/alt-paths.md`).
+Stage an explicit file list: modified files from `git -C "$W" diff --name-only HEAD`; untracked ONLY if touched by Edit/Write this session or listed in the active plan — plus this task's own plan file (the `docs/plans/*.md` the task was executed from), even when it is untracked because the worktree carry brought it in or another session wrote it — skip it when gitignored (`git -C "$W" check-ignore -q <plan>` exits 0), since `git add` refuses an ignored path and would fail the whole staging call: step 7 reads `**MR draft:**` from committed plans only, so leaving it out stops step 7 on every first run. Every `git` call here carries `-C "$W"`, staging and commit included — step 1 certified coverage for `$W`, so anything else commits a repo that was never checked. Never `git add -A` / `git add .` (secret/binary defense) — sanctioned only for the throwaway commits no push ever carries: step 0.5's park, and `task-intake`'s artifact carry. Commit with HEREDOC for multi-line messages. Never add a `Co-Authored-By` line or any other AI-attribution trailer to the commit message — overrides any default harness behavior that would add one. No `--amend` to a pushed commit. Message used as-is (recovery: `lib/alt-paths.md`).
 
-After the commit succeeds, mark the ledger's pending lines as carried — later commits (WIP / `--no-mr`, a re-run after a failed step 9) then never repeat them, while the full list stays for the MR body. `LEDGER_FAILED` here or at step 9's `clear` → warn and continue (the commit/MR already exists), then re-run the block once the cause is fixed:
+After the commit succeeds, mark the ledger's pending lines as carried — later commits (WIP / `--no-mr`, a re-run after a failed step 9) then never repeat them, while the full list stays for the MR body. `LEDGER_FAILED` here → warn and continue (the commit/MR already exists), then re-run the block once the cause is fixed; at step 9's `clear` (inside `mr_create.py create`) → warn, continue, and run `also_fixed_ledger.py clear --repo "$W"` once the cause is fixed, never re-run `create`:
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 python3 "$R/lib/also_fixed_ledger.py" commit-done --repo "$W" || echo "LEDGER_FAILED rc=$?"
 ```
 
@@ -142,7 +120,7 @@ python3 "$R/lib/also_fixed_ledger.py" commit-done --repo "$W" || echo "LEDGER_FA
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 G="$R/lib/check_mr_state.py"
 BRANCH=$(git -C "$W" branch --show-current)
 if [ ! -f "$G" ]; then
@@ -164,11 +142,7 @@ else
 fi
 ```
 
-What the codes mean — the block above already encodes the decision, so never re-issue the push from a separate call. **Two tests run before any rc is read, and both refuse the push with `2`**: the guard file is not there (`[ -f "$G" ]`), and the guard printed nothing (`[ -z "$MR_STATE" ]`). An rc can say why a helper failed, never that it answered, and an unanswered guard would push blind on either push branch below — rc `0` included, since a script truncated to valid syntax exits `0` with empty stdout (both worth logging in a personal notes file if you keep one — section "A custom exit code that the interpreter also produces, with the same empty stdout"; how a live session's script path vanishes under it is the section "Releasing a plugin kills the hooks of every already-open session", both in the author's own). Past those two tests: `0` = MR open. `3` = "no MR found", the forge positively confirmed there is none: normal before MR creation, hence the logged line. Those two are the only push branches. `1` = not open, likely merged/closed mid-session; recovery is a cherry-pick onto a fresh branch and a new MR. Everything else lands on the `else`, `2` included (`glab`/`gh` missing, bad token, network down, a bad `--cwd`) — fail closed, since pushing blind is exactly how a merged branch gets recreated as an orphan. `2` is also what a transient forge error produces (measured 2026-08-19: 1 of 3 `glab mr view` calls returned `net/http: TLS handshake timeout`), so re-running the block is the recovery, not a bypass. Same contract as `simo-dev:mr-followup` step 7.6.
-
-**A non-zero exit here ends the cascade** — steps 6-10 must not run: the branch was deliberately not pushed, so whatever step 6 finds — the merged MR itself, or nothing conclusive — it must not act on, and step 10 must not hand that state to `simo-dev:mr-followup`. This and step 9's create blocks are the two places the "auto-cascades, unconditional (no gate)" contract at the top of this skill does not apply — including the step-10 hand-off that `simo-dev:guide` and `simo-dev:afk` both describe as unconditional. An unattended run must not apply `simo-dev:afk`'s "a command failed → retry, don't stop" wholesale, and cannot classify by exit status — `git push` is the last command of the push branch, so a rejected push exits `1` too. Classify on the message, and match the two never-answered arms **first** — they share the `could not verify` prefix on purpose, because that prefix is also what a human reader scans for. No `STOP:` line → git failed, so fetch, rebase, retry. A `STOP: could not verify …` naming `the guard is not at` or `printed nothing` → **park**, not retry: those two say the guard never ran or never answered, so a byte-identical retry spins and `simo-dev:afk`'s retry rule carries no attempt cap. One escape hatch, and **each arm has its own evidence** — the generic cause list printed in every message is not evidence. On `the guard is not at`, read the path the message echoes: a `/lib/…` root means `R` was never bound. On `printed nothing`, read the guard's own **stderr** line above it: an argparse usage error names the offending argument (`--cwd must be an absolute path`, or a bad `--forge` from `simo-dev:mr-followup`'s copy of this block), while a truncation leaves stderr empty and stays a park. Both of those are the caller's substitution, not a broken plugin — the forgotten-binding hazard the preamble at the top of this skill names — so re-issue the whole block with the literals in place, run it **once** more, then park. Any **other** `STOP: could not verify …` → retry: that one is the guard answering `unverifiable`, i.e. a bad token, a dead network, a transient forge error. `STOP: MR … is now '<state>' (not open)` → park. The split is answered-but-unverifiable versus never-answered, not one code versus another.
-
-Why the block pushes with `-u`, first push or not: a bare `git push` inherits an upstream from the worktree start-point and targets the *base* branch under `push.default=upstream`, and only the default `push.default=simple` happens to refuse it. Still require explicit confirmation: `--force`/`--force-with-lease` (any branch); protected-branch push (wrong path — see Protected-Branch Path).
+The block above already encodes the decision, so never re-issue the push from a separate call. **A non-zero exit here ends the cascade** — steps 6-10 must not run. Before any retry or recovery (and always under `simo-dev:afk`), read `lib/failure-paths.md` "Step 5: push block codes and recovery": what each code means and how to classify a `STOP:` line (retry, re-issue once, or park). Still require explicit confirmation: `--force`/`--force-with-lease` (any branch); protected-branch push (wrong path — see Protected-Branch Path).
 
 ### 6. MR-exists check
 
@@ -183,207 +157,69 @@ else
 fi
 ```
 
-Scoped like step 9, and for the same reason — a false positive here is silent: from a sibling project's worktree carrying a same-named branch, the check reports another project's MR and the flow jumps to the existing-MR path. The braces keep the `gh` fallback inside the scope; `cd "$W" && glab … || gh …` would run the fallback in the ambient cwd.
+Scoped to the worktree because glab/gh resolve the project from the cwd, and `-R` does not pin the source (`lib/mr_create.py` docstring) — a false positive here is silent: from a sibling project's worktree carrying a same-named branch, the check reports another project's MR and the flow jumps to the existing-MR path. This is the one `cd "$W" &&` left in this file, a deliberate exception to CLAUDE.md "Worktree cwd gotcha" (`Never cd to establish context`): the source project has no `git -C` equivalent, and the `cd` runs inside a command substitution, so the caller's cwd does not move. The braces keep the `gh` fallback inside the scope; `cd "$W" && glab … || gh …` would run the fallback in the ambient cwd.
 
 `EXISTING_MR=yes` → skip to step 10 (existing-MR flow, `lib/alt-paths.md`). `EXISTING_MR=no` → step 7. Branch on the printed token, never on the tool result being empty: both forge calls have their stdout eaten by the substitution and their stderr silenced, so before the verdict line the result looked identical either way. An **empty** tool result now means the block did not run — not that no MR was found. It still cannot tell "no MR" from "glab could not be asked". A *persistent* auth failure costs a wasted step 7 and then fails loudly at step 9. A *transient* one is worse and is why this is only deferred, not dismissed: if the step-6 call failed once while an MR already exists, step 9's create errors ("already exists"). Step 9 routes that failed create back to this step rather than on to its verification, which would find the pre-existing MR, match `source_branch`, pass, and report `MR created:` for an MR it did not create.
 
-### 7. Generate MR body via `lib/mr_presentation.py mode=create`
-
-Before generating, make sure the ticket's prefix has a `scope_fetch_cmd` configured — `build_mr_ctx.py` below silently produces an empty `ticket_summary` otherwise:
+### 7. Generate MR body via `lib/mr_create.py`
 
 ```bash
 W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-BRANCH=$(git -C "$W" branch --show-current)
-KEY=$(python3 "$R/lib/derive_ticket_key.py" "$BRANCH" --cwd "$W")
-if [ -n "$KEY" ]; then
-  PREFIX="${KEY%%-*}"
-  CMD=$(python3 "$R/lib/tracker_config.py" get "$PREFIX" scope_fetch_cmd)
-  [ -z "$CMD" ] && echo "ASK_SCOPE_FETCH_CMD prefix=$PREFIX key=$KEY"
-fi
-```
-
-Same ask-and-remember as `simo-dev:mr-review` step 4: an `ASK_SCOPE_FETCH_CMD prefix=<P> key=<K>` line means ask the user which command fetches a plain-text ticket scope for that prefix (contract: `<CMD> <key> <comments>` → stdout), offering "skip"; concrete answer → `python3 "$R/lib/tracker_config.py" set "$PREFIX" scope_fetch_cmd "<answer>"`; "skip" → `... set "$PREFIX" scope_fetch_cmd -`. No line → proceed straight to the block below.
-
-```bash
-W="<absolute path of the task worktree>"
-git -C "$W" fetch origin --prune --quiet  # stale origin/<target> skews merge-base and the MR diff; --prune drops a deleted parent branch, which would otherwise still be picked as a stacked target
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-mkdir -p "$MRTMP"
-echo "MRTMP=$MRTMP"  # the literal for later Write-tool calls
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 TARGET_ARG="<the --target skill arg, or empty>"
-python3 "$R/lib/build_mr_ctx.py" --repo "$W" --target "$TARGET_ARG" > "$MRTMP/mr_ctx.json" || { echo "STOP: build_mr_ctx.py failed (rc $?, stderr above) — MR not generated." >&2; exit 1; }
-TARGET_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target)
-echo "MR target: $TARGET_BRANCH ($(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target_source))"
-python3 "$R/lib/stack_record.py" record --repo "$W" --target "$TARGET_BRANCH" || echo "WARNING: stack_record.py record failed (rc $?) — mr-followup cannot spot a squash-merged parent for this branch (continuing)"
-if git -C "$W" merge-base --is-ancestor "$TARGET_BRANCH" HEAD 2>/dev/null; then
-  LOCAL_BASE_AHEAD=$(git -C "$W" rev-list "origin/${TARGET_BRANCH}..${TARGET_BRANCH}")
-  if [ -n "$LOCAL_BASE_AHEAD" ]; then
-    echo "STOP: local '$TARGET_BRANCH' is ahead of origin/$TARGET_BRANCH, and those commits are in this branch's ancestry — they would show up in the MR diff as unrelated changes:"
-    git -C "$W" log --oneline "origin/${TARGET_BRANCH}..${TARGET_BRANCH}"
-    exit 1
-  fi
-fi
-git -C "$W" diff "origin/${TARGET_BRANCH}...HEAD" > "$MRTMP/mr_diff.txt"  # three-dot: merge-base diff, matches the forge MR view
+DRAFT_ARG="<1 if the --draft skill arg was given, 0 if --no-draft was given, else empty>"
+python3 "$R/lib/mr_create.py" prepare --repo "$W" --target "$TARGET_ARG" --draft "$DRAFT_ARG"
 ```
 
-Mirror-image of step 0.5's guard: that one stops when `origin/<base>` has advanced *beyond* the branch's fork point; this one stops when the *local* `<base>` is ahead of `origin/<base>` and those extra commits are already part of this branch's ancestry (e.g. the branch was created from, or later rebased/merged onto, a local base that was never pushed). `merge-base --is-ancestor` guards against false positives from unrelated local-base work this branch never incorporated. There is no bypass: ask the user for explicit confirmation before pushing the local `<base>` (a protected-branch push when `<base>` is a protected branch — the default branch, or a stacked integration branch — a feature-branch push otherwise; asked either way), never push it unasked; once pushed, re-run this whole block — it already re-fetches `origin` first, so the re-run passes cleanly with no further action. If the user declines to push, MR generation cannot proceed until they do (or the branch is rebased onto a base that no longer carries the unpushed commits). The `exit 1` ends the step-7 block before `mr_diff.txt` is written, same as step 5's own guard ending the rest of the commit cascade on a non-zero exit — every later step here depends on `mr_diff.txt`/`mr_ctx.json` existing.
+Run the block above. Its stdout is `key: value` lines. rc 0 → continue; rc 3 → ask (below); rc 1 → stop (below); rc 2 → `R` unbound or the `DRAFT_ARG` placeholder left in: re-issue it with the literals (afk: once, then park). A leftover `W` placeholder surfaces as rc 1 `STOP: --repo must be …` instead.
 
-**MR target.** `build_mr_ctx.py` picks it in order: `TARGET_ARG` (the `--target` skill arg, or the branch the user named at step 0.5's `note:` question — the value step 0.5 settled, reused here), else a stacked parent (the nearest remote branch this branch is built on), else the repo default branch. The local-base-ahead check above, `mr_diff.txt` and step 9 all use that same target. `lib/stack_record.py record` stores it (and the fork point) in branch config — cleared when the target is the default branch and the recorded parent is gone from the remote — so `simo-dev:mr-followup` step 1 can spot a parent later merged rewritten. Relay the `MR target:` line, and any `note:` line, to the user. A `note:` here was already asked about at step 0.5 — do not ask twice; under `simo-dev:afk`, record it in the afk summary and continue with the default target. A `STOP:` from the script (rc 2: `--target` not on origin; rc 3: two stacked parents at the same distance) → ask the user which branch and re-run the block with `TARGET_ARG` set; under `simo-dev:afk`, stop and record it in the afk summary — do not guess.
+`ASK: scope_fetch_cmd prefix=<P> key=<K>` (rc 3, nothing written) → same ask-and-remember as `simo-dev:mr-review` step 4: ask which command fetches a plain-text ticket scope for that prefix (contract: `<CMD> <key> <comments>` → stdout), offering "skip"; concrete answer → `python3 "$R/lib/tracker_config.py" set <P> scope_fetch_cmd "<answer>"` ("skip" → value `-`); then re-run the prepare block. Under `simo-dev:afk` the answer is "skip": run `python3 "$R/lib/tracker_config.py" set <P> scope_fetch_cmd -`, re-run the prepare block, record it in the afk summary.
 
-`$MRTMP` is keyed by repo+branch — concurrent sessions must not clobber each other (incident 2026-06-10). Deterministic: re-derive at the top of any later Bash block; substitute the echoed literal path in Write-tool calls.
+`mrtmp:` is the scratch-dir literal: substitute it for `<mrtmp>` in Write-tool calls and in step 8.
 
-Tell the user "Generating MR preview…" (~30-60s), then:
+**MR target.** Relay `target:` / `target_source:` as `MR target: <target> (<target_source>)` and any `note:` line. A `note:` here was already asked about at step 0.5 — never ask twice (afk: record it in the afk summary, continue with the default target). The order is `--target`, else stacked parent, else repo default; steps 0.5 and 9 use the same one. `STOP: target: …` → ask the user which branch and re-run the block with `TARGET_ARG` set (afk: stop, record it, never guess) — except a `STOP: target:` quoting `<the --target skill arg`: the placeholder was left in, so re-issue the block with the literal, do not ask.
+
+`draft:` → relay as `MR draft: <0|1>` (`--draft`/`--no-draft` win, else a committed plan's `**MR draft:**` header).
+
+Any other `STOP:` ends the cascade: `STOP: local base ahead` → read `lib/failure-paths.md` "Step 7: local base ahead of origin" (no bypass, never push the local base unasked); every other one → "Step 7: other prepare stops".
+
+Tell the user "Generating MR preview…" (~30-60s). `request:` present. Never Read `mr_request.json` in this session: it carries the whole diff, which would stay in context to the end of the task. Dispatch the Agent tool with `subagent_type` = the `agent_type:` value, `model` = the `model:` value, and this short prompt, the `request:` path substituted as a literal: "Read `<request path>` with the Read tool, the whole file. Its `prompt` field is your task: follow it exactly. Its `schema` field is the JSON schema of your answer: call `StructuredOutput` with an object that validates against it; without that tool, reply with that JSON object only." Append this line verbatim at dispatch (never written into the shared prompt files): "Write throwaway files only under a fresh `mktemp -d /tmp/claude_<slug>.XXXXXX` of your own; never write into or overwrite files in the Scratchpad directory your environment lists — it belongs to the caller's session." The agent returns the validated object — write it to `<mrtmp>/mr_pres.json` with the Write tool. If `StructuredOutput` wasn't available and the agent returned plain text, extract the outermost `{...}` JSON object from it (strip markdown code fences if present) and write *that* — a well-formed object there is not itself a failure.
+
+No `request:` line (prepare printed `fallback:`), a failed dispatch, or no extractable JSON object → write nothing and go straight to the body block: the script writes the minimal body.
 
 ```bash
 W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/mr_presentation.py" --mode create \
-  --diff-file "$MRTMP/mr_diff.txt" --context-file "$MRTMP/mr_ctx.json" > "$MRTMP/mr_request.json"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/mr_create.py" body --repo "$W"
 ```
 
-Never capture this output into a shell variable (`VAR=$(...)`) to relay it onward — always redirect the command's stdout straight to a file (incident 2026-07-27: zsh's builtin `echo` reinterprets backslash escapes by default, and a literal `\c` anywhere in the JSON — common in file paths, regex, or diffed code — makes `echo "$VAR" > file` silently stop writing at that byte, truncating a ~42KB payload to a few hundred; a direct redirect never goes through `echo` and isn't affected).
-
-Read `$MRTMP/mr_request.json` directly (Read tool) to get `prompt`, `schema`, `agent_type`, `model`; dispatch the Agent tool with that `prompt` plus this line appended verbatim at dispatch (never written into the shared prompt files): "Write throwaway files only under a fresh `mktemp -d /tmp/claude_<slug>.XXXXXX` of your own; never write into or overwrite files in the Scratchpad directory your environment lists — it belongs to the caller's session.", which should call `StructuredOutput` and return the validated object — write it to `$MRTMP/mr_pres.json`. If `StructuredOutput` wasn't available and the agent returned its answer as plain text instead, extract the outermost `{...}` JSON object from that text (strip markdown code fences if present) and write *that* to `$MRTMP/mr_pres.json` — a well-formed object here is not itself a failure. Then run:
-
-```bash
-W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/mr_presentation.py" --normalize-presentation "$MRTMP/mr_pres.json"
-```
-
-(rc 0: HTML-unescapes any entities the agent introduced — e.g. `--&gt;` / `&lt;br/&gt;` from the plain-text path above — and confirms the required keys are present. Unconditional: it runs on the `StructuredOutput` path too, so a no-op only when the input carries no entities. In the `mermaid` field a quote entity inside a still-quoted label becomes `#quot;` rather than a bare `"`, which would nest quotes inside the label and stop mermaid parsing; escaped label *delimiters* keep being restored to bare `"`.) Dispatch fails / JSON extraction fails / normalize rc≠0 → minimal fallback body (title from commit message + commit log + stat) + one-line warning, and write `{"title": "<commit subject>"}` to `$MRTMP/mr_pres.json` (Write tool) — step 9 reads the title only from there; write the fallback body to `$MRTMP/mr_body.md` directly and run the block below without its `--assemble` line (keep the `W`/`MRTMP`/`R` lines, the ledger's `section` append needs them), which would empty `mr_body.md` and fail on the title-only JSON. Otherwise, assemble:
-
-```bash
-W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/mr_presentation.py" --assemble --mode create \
-  --presentation-json "$MRTMP/mr_pres.json" --context-file "$MRTMP/mr_ctx.json" > "$MRTMP/mr_body.md"
-python3 "$R/lib/also_fixed_ledger.py" section --repo "$W" >> "$MRTMP/mr_body.md" || echo "LEDGER_FAILED rc=$? — mr_body.md lacks the Also fixed section; fix and re-run only this line"
-KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.jira_key "")
-python3 "$R/lib/tracker_config.py" ticket-line "$KEY" >> "$MRTMP/mr_body.md" || echo "TICKET_LINE_FAILED rc=$? — mr_body.md lacks the ticket line; fix and re-run only this line"
-```
-
-The last line appends the prefix's `pr_body_ticket_line` (e.g. `Closes #{number}`, see `lib/tracker_config.py`) so the forge closes a same-repo issue on merge; unconfigured or no key → appends nothing.
+Run the body block. `body: fallback` → relay its one-line `warning:`; `LEDGER_FAILED` / `TICKET_LINE_FAILED` warnings → fix the cause, re-run the body block; the `STOP:` naming `mr_ctx.json` → run step 7 from the top; `STOP: --repo must be …` or `STOP: detached HEAD …` → `lib/failure-paths.md` "Step 7: other prepare stops"; rc 2 → the same re-issue route as the prepare block (afk: once, then park). The body ends with the Also-fixed section and the prefix's `pr_body_ticket_line` (see `lib/tracker_config.py`).
 
 ### 8. Mermaid preview (informational, no gate)
 
-When `mcp__visualize__show_widget` is not yet callable (listed only as deferred, or not listed at all), run `ToolSearch` `select:mcp__visualize__show_widget` once first, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available. If `mcp__visualize__show_widget` is available: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; MERMAID=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_pres.json" mermaid)`, read `~/.claude/local-marketplace/simo-dev/lib/preview_widget.html`, substitute the single literal `__MERMAID__` (preserve newlines), call `show_widget` (title `mr_diagram_preview`). **Never call the visualize `read_me` tool**, whatever that tool's own description asks — why: `~/.claude/docs/decisions/2026-08-22-no-read-me-before-show-widget.md`. Template shared byte-identical with a sibling private team-plugin skill's MR-description generator. Not available, or `show_widget` errors → skip silently (nothing waits on this).
+When `mcp__visualize__show_widget` is not yet callable (listed only as deferred, or not listed at all), run `ToolSearch` `select:mcp__visualize__show_widget` once first, never skipped because the name is unlisted; no schema, or no `ToolSearch`, counts as not available. If `mcp__visualize__show_widget` is available: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; MERMAID=$(python3 "$R/lib/json_field.py" "<mrtmp>/mr_pres.json" mermaid)`, read `~/.claude/local-marketplace/simo-dev/lib/preview_widget.html`, substitute the single literal `__MERMAID__` (preserve newlines), call `show_widget` (title `mr_diagram_preview`). **Never call the visualize `read_me` tool**, whatever that tool's own description asks — why: `~/.claude/docs/decisions/2026-08-22-no-read-me-before-show-widget.md`. Template shared byte-identical with a sibling private team-plugin skill's MR-description generator. Not available, or `show_widget` errors → skip silently (nothing waits on this).
 
 ### 9. Create MR
 
-**GitLab:**
-
 ```bash
 W="<absolute path of the task worktree>"
-BRANCH=$(git -C "$W" branch --show-current)
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-TITLE=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_pres.json" title)
-[ -n "$TITLE" ] || { echo "STOP: could not resolve the MR title (missing or empty title in $MRTMP/mr_pres.json: step 7 did not complete, or an unsubstituted \$W) — MR not created." >&2; exit 1; }
-TARGET_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target)
-[ -n "$TARGET_BRANCH" ] || { echo "STOP: could not resolve the MR target branch (missing or empty branch_meta.target in $MRTMP/mr_ctx.json: step 7 did not complete, or an unsubstituted \$W) — MR not created; an empty target would silently fall back to the default branch." >&2; exit 1; }
-ASSIGNEE=""
-for _ in 1 2 3; do
-  ASSIGNEE=$(cd "$W" && glab api user | python3 "$R/lib/json_field.py" - username)
-  [ -n "$ASSIGNEE" ] && break
-done
-[ -n "$ASSIGNEE" ] || { echo "STOP: could not resolve the GitLab username after 3 tries (glab api user failed or returned no username, or a bad cwd such as an unsubstituted \$W failed every cd) — MR not created; re-run this block." >&2; exit 1; }
-cd "$W" && glab mr create \
-  --title "$TITLE" \
-  --description "$(cat "$MRTMP/mr_body.md")" \
-  --assignee "$ASSIGNEE" \
-  --source-branch "$BRANCH" \
-  --squash-before-merge \
-  --remove-source-branch \
-  --target-branch "$TARGET_BRANCH" \
-  --yes
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
+python3 "$R/lib/mr_create.py" create --repo "$W"
 ```
 
-**GitHub:**
+The script picks the forge from `origin`, resolves title/target/body/assignee, creates the MR/PR from the worktree, verifies it (source branch, Draft when requested, one mark-Draft attempt), then records the `mr_created` flow event, clears the Also-fixed ledger and runs the CodeReview transition (best-effort: `warning:` lines only).
 
-```bash
-W="<absolute path of the task worktree>"
-BRANCH=$(git -C "$W" branch --show-current)
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-TITLE=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_pres.json" title)
-[ -n "$TITLE" ] || { echo "STOP: could not resolve the MR title (missing or empty title in $MRTMP/mr_pres.json: step 7 did not complete, or an unsubstituted \$W) — PR not created." >&2; exit 1; }
-TARGET_BRANCH=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.target)
-[ -n "$TARGET_BRANCH" ] || { echo "STOP: could not resolve the MR target branch (missing or empty branch_meta.target in $MRTMP/mr_ctx.json: step 7 did not complete, or an unsubstituted \$W) — PR not created; an empty base would silently fall back to the default branch." >&2; exit 1; }
-cd "$W" && gh pr create --title "$TITLE" --body-file "$MRTMP/mr_body.md" --base "$TARGET_BRANCH" --head "$BRANCH" --assignee @me
-```
+`STOP: could not detect the forge` → ask the user GitLab or GitHub and re-run the block with `--forge <gitlab|github>` appended (afk: park).
 
-The GitLab username is resolved before the create, never inside it: a failed `glab api user` inside the create's own command substitution became `--assignee ""`, and glab created the MR unassigned at rc 0 (observed 2026-09-30, `net/http: TLS handshake timeout`). The 3 attempts cover the same transient forge error step 5 documents. Title and target branch are resolved the same way, in both blocks, and checked first (local reads, no forge call wasted). The target is whatever step 7 resolved — a stacked parent branch when `target_source` is `stacked`, so the MR merges into that branch, not the default one: an empty `--target-branch` makes glab fall back to the project's target-branch rules or default branch with no error (glab `mr_create.go`, `getTargetBranch`), and gh without `--base` uses `gh-merge-base` or the default branch (`gh pr create --help`; that `--base ""` behaves the same is derived, not measured). The verification below checks only the source branch, so it would pass such an MR. glab alone already rejects an empty title (`title can't be blank`); the guard covers both forges the same way. For the assignee GitHub needs no guard (derived, not measured): `@me` is resolved inside the `gh` process, not by a shell substitution, so there is no empty string to pass through.
+**A non-zero exit ends the cascade**: the rest of step 9 and step 10 do not run. rc 1 = nothing created; rc 2 = the block ran with `R` unbound or a placeholder left (python could not open `/lib/mr_create.py`, or a bad `--forge`): re-issue it with the literals (afk: once, then park); rc 4 = the create call failed and an MR may exist anyway (never retry the create); rc 5 = an MR exists but failed verification (never hand its URL on). Read `lib/failure-paths.md` "Step 9: create block failed" and recover on evidence.
 
-**A non-zero exit from a create block ends the cascade**, same contract as step 5's "A non-zero exit here ends the cascade": the rest of step 9 (both verification blocks, the `also_fixed_ledger.py clear` block, the CodeReview transition) and step 10 must not run until the create block exits 0, except as the failed-create bullet below routes them. The `clear` and transition blocks have no guard of their own. Recover on evidence, never on the cause list every message prints:
+rc 0 → print `url:` as a markdown link in chat, one line: `MR created: <url>`; relay `warning:` lines.
 
-- title/target STOP whose echoed path is `/tmp/claude_mr_._/…` → an unsubstituted or invalid `$W` collapsed `$MRTMP` to that (json_field.py's `[Errno 2]` on stderr): re-issue the block with the literal `$W`. A step 7 once run the same way leaves that dir behind, and its files can let the title/target checks pass, so an unsubstituted `$W` can also surface as the username STOP.
-- any other title/target STOP → step 7 did not complete, or took its minimal-fallback path without writing `mr_pres.json`: redo it, then re-run the block. A plain re-run fails the same way.
-- username STOP → a transient forge error: re-run the block.
-- no STOP line, the `glab mr create` / `gh pr create` call itself failed → an MR may exist anyway ("already exists" after a transient step-6 miss, or a create whose response was lost): never retry the create, re-run step 6 once. `EXISTING_MR=yes` → run the CodeReview transition block below (the existing-MR flow skips it), then step 10's existing-MR flow. `EXISTING_MR=no` or an empty result → the create failed for a real reason (a 422 from the wrong cwd, see below; a bad token; a rejected field): stop and report the create's own stderr, never back to step 7.
-
-A STOP line means nothing was created; the last case does not. Unattended (`simo-dev:afk`), whose retry rule carries no attempt cap: `/tmp/claude_mr_._` → one re-issue with the literal, then park; any other title/target STOP → park; username STOP → re-run **once**, then park; failed create call → the step-6 re-run above, and park on anything but `EXISTING_MR=yes`.
-
-The cwd decides **two** things here, and both are the worktree cwd gotcha:
-
-- **Branch.** Without `--source-branch`/`--head` both tools default to the current branch of the *process* cwd, not the worktree (incident 2026-07-27: !35 shipped against the unrelated Claude-session branch, no error; closed and recreated as !36 with `--source-branch` explicit). Always pass the flag.
-- **Project.** The cwd's remote decides the **source** project, and `-R` does not: on glab 1.110.0 `-R` sets the *target* (it replaced the deprecated `--target-project`) and glab creates against the head repo by design, so `-R` does not protect the source project at all — and when the cwd sits in another repo it turns a same-project MR into a cross-project fork request. Symptom: 422 `Source project is not a fork of the target project` — read it as "wrong repo", not as permissions or a missing fork (example: `-R` pointed at repo A while the cwd sat in a worktree of repo B — the create POSTed to repo A's project and 422'd; the same command without `-R`, run from inside repo A's own worktree, created the MR cleanly).
-
-`cd "$W" &&` here and on step 6 is a deliberate exception to CLAUDE.md "Worktree cwd gotcha" (`Never cd to establish context`): the source project has no `git -C` equivalent, so each block scopes its own command rather than relying on an earlier one. On 1.110.0 the source-side overrides are `-H/--head` and `GITLAB_HEAD_REPO`, both wanting a slug this step never derives — and a bare `owner/repo` pins the path but not the host (`simo-dev:mr-followup` step 1). Two consequences: a `cd` inside a compound command can raise a permission prompt on headless paths (`simo-dev:afk`, an unattended headless caller), and the Bash cwd stays on `$W` for later steps — that second one for the two bare `cd "$W"` in this step: both create calls. The `cd` of step 6, of the GitLab username lookup, and of both verification blocks, each run inside a command substitution whose subshell cwd never reaches the caller. Scope the verification too — from the wrong cwd it confirms the wrong project's MR.
-
-Verify before printing the URL — confirms the MR actually attached to `$BRANCH` in `$W`'s project, catching a repeat of either incident above instead of shipping it silently. Both verification blocks send the STOP to stderr and **exit 1**, so a headless runner branching on `$?` stops with it — a bare `echo` leaves the block at exit 0 and reads as a clean create. The `[ -n "$BRANCH" ]` guard is not decoration: on a detached HEAD the binding above is empty and the GitHub test would compare empty-to-empty and pass. GitLab needs no such guard, but only incidentally — reading `.source_branch` from empty/invalid stdin via `json_field.py` yields an empty `$SOURCE_BRANCH`, which the equality check below already rejects:
-
-```bash
-W="<absolute path of the task worktree>"
-BRANCH=$(git -C "$W" branch --show-current)
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-SOURCE_BRANCH=$(cd "$W" && glab mr view "$BRANCH" -F json | python3 "$R/lib/json_field.py" - source_branch)
-[ -n "$SOURCE_BRANCH" ] && [ "$SOURCE_BRANCH" = "$BRANCH" ] \
-  || { echo "STOP: MR source_branch mismatch or no MR found for branch '$BRANCH' — do not hand the URL to the user." >&2; exit 1; }
-```
-
-**GitHub:**
-
-```bash
-W="<absolute path of the task worktree>"
-BRANCH=$(git -C "$W" branch --show-current)
-[ -n "$BRANCH" ] && [ "$(cd "$W" && gh pr view "$BRANCH" --json headRefName -q .headRefName)" = "$BRANCH" ] \
-  || { echo "STOP: empty branch, PR headRefName mismatch, or no PR found for branch '$BRANCH' — do not hand the URL to the user." >&2; exit 1; }
-```
-
-Print the created URL as a markdown link in chat, one line: `MR created: <url>`.
-
-The MR body now carries the Also-fixed section, so clear the ledger — nothing else reads it (never on the `--no-mr` / WIP path: the MR created later still needs the full list):
-
-```bash
-W="<absolute path of the task worktree>"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-python3 "$R/lib/also_fixed_ledger.py" clear --repo "$W" || echo "LEDGER_FAILED rc=$?"
-```
-
-Transition ticket to CodeReview (idempotent, forward-only, best-effort; `DEV_FLOW_NO_TRACKER=1` and no `transition_cmd` configured for the prefix both skip):
-
-```bash
-W="<absolute path of the task worktree>"
-MRTMP="/tmp/claude_mr_$(basename "$(dirname "$(git -C "$W" rev-parse --path-format=absolute --git-common-dir)")")_$(git -C "$W" branch --show-current | tr '/' '-')"
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
-TICKET_KEY=$(python3 "$R/lib/json_field.py" "$MRTMP/mr_ctx.json" branch_meta.jira_key "")
-if [ -n "$TICKET_KEY" ]; then
-  PREFIX="${TICKET_KEY%%-*}"
-  python3 "$R/lib/tracker_config.py" run "$PREFIX" transition_cmd "$TICKET_KEY" "CodeReview" --leaf-only --sync-parent --clear-blocked || echo "WARNING: transition_cmd failed for $TICKET_KEY -> CodeReview (continuing)"
-fi
-```
-
-A `transition_cmd` failure — any non-zero exit, including a `--leaf-only` refusal on an umbrella ticket or a `--sync-parent` exit 7 (the ticket's Jira parent has every sub-task at/past Done — the close is gated with the user at post-merge, `simo-dev:mr-followup` step 8.6; see `simo-dev:task-intake` step 2.5) — only prints the warning above; the flow always continues. This transition is best-effort and never blocks step 9.
+**Verification notes ticket comment** — right after the MR exists, leave the "Verification notes (auto)" comment the release skill reads: the **First post** procedure of `lib/verification-notes.md` (load on demand), with this call site's inputs from its **Inputs** section. Best-effort: a skip or a failed post never blocks step 10.
 
 ### 10. After the MR
 
-`Suggestion: consider start_session — mr-followup can run in a fresh session (CI wait + auto-fix rounds), brief naming this worktree's absolute path.` (`use_worktree: false` shares only the session's own folder — this worktree only when the session itself sits in it, a desktop-app tree.) Print it always, unconditionally — never a heuristic, never a gate, never mentions a model (mirrors the `Suggestion: consider start_session` style already used in `simo-dev:plan-write's own review gate` for large plans). Purely informational: the cascade continues exactly as below whether or not the user acts on it, so a headless/autopilot caller is never blocked by it.
+`Suggestion: consider start_session — mr-followup can run in a fresh session (CI wait + auto-fix rounds), brief naming this worktree's absolute path.` (`use_worktree: false` shares only the session's own folder — this worktree only when the session itself sits in it, a desktop-app tree.) Print it always, unconditionally — never a heuristic, never a gate, never mentions a model. Purely informational: the cascade continues exactly as below whether or not the user acts on it, so a headless caller is never blocked by it.
 
 Invoke `simo-dev:mr-followup` directly, no ask (note "Entering simo-dev:mr-followup"), passing the cap decided in step 1; it watches the pipeline, auto-handles findings (unconditional commit+push there too), **parks before the merge**. Same terminal point as `simo-dev:afk`. The WIP opt-out is `--no-mr` (skips MR creation entirely, step 6).
 

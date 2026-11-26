@@ -27,6 +27,7 @@ def test_decide_ahead_stops():
 
 
 def test_analyze_not_ancestor(monkeypatch):
+    monkeypatch.setattr(clba, "_has_local_branch", lambda repo, base: True)
     monkeypatch.setattr(clba, "_is_ancestor", lambda repo, ancestor, descendant: False)
     ahead, commits = clba.analyze("/x", "master")
     assert ahead is False
@@ -34,6 +35,7 @@ def test_analyze_not_ancestor(monkeypatch):
 
 
 def test_analyze_ancestor_no_extra_commits(monkeypatch):
+    monkeypatch.setattr(clba, "_has_local_branch", lambda repo, base: True)
     monkeypatch.setattr(clba, "_is_ancestor", lambda repo, ancestor, descendant: True)
     monkeypatch.setattr(clba, "_git", lambda repo, args: "")
     ahead, commits = clba.analyze("/x", "master")
@@ -42,6 +44,7 @@ def test_analyze_ancestor_no_extra_commits(monkeypatch):
 
 
 def test_analyze_ancestor_with_extra_commits(monkeypatch):
+    monkeypatch.setattr(clba, "_has_local_branch", lambda repo, base: True)
     monkeypatch.setattr(clba, "_is_ancestor", lambda repo, ancestor, descendant: True)
 
     def fake_git(repo, args):
@@ -106,3 +109,19 @@ def test_main_git_error_returns_2(monkeypatch):
 def test_main_requires_repo_and_base():
     with pytest.raises(SystemExit):
         clba.main([])
+
+
+def _real_git(cwd, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def test_main_absent_local_base_is_safe(tmp_path):
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    _real_git(tmp_path, "init", "-q", "--bare", "-b", "master", str(origin))
+    _real_git(tmp_path, "clone", "-q", str(origin), str(work))
+    _real_git(work, "commit", "-q", "--allow-empty", "-m", "init")
+    _real_git(work, "push", "-q", "origin", "master")
+    _real_git(work, "checkout", "-q", "-b", "feat")
+    _real_git(work, "commit", "-q", "--allow-empty", "-m", "feat")
+    _real_git(work, "branch", "-q", "-D", "master")
+    assert clba.main(["--repo", str(work), "--base", "master"]) == 0

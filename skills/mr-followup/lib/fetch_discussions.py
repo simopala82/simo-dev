@@ -79,6 +79,12 @@ def main() -> None:
         sys.exit(1)
 
     project, mr_iid, host = sys.argv[1], sys.argv[2], sys.argv[3]
+    # GitLab answers a bad project path or an empty IID with a bare HTTP 400, which reads as a
+    # token or forge fault. A common cause: a zsh `set -- $x` loop that never split "<project> <iid>".
+    if not project or any(c.isspace() for c in project):
+        sys.exit(f"Error: invalid project '{project}', expected a path like group/project with no spaces.")
+    if not (mr_iid.isascii() and mr_iid.isdigit()):
+        sys.exit(f"Error: mr_iid must be digits only (e.g. 42, no '!'), got '{mr_iid}'.")
     gitlab_url = host if host.startswith(("http://", "https://")) else f"https://{host}"
     token = get_token()
     # OSError covers HTTPError and URLError (both subclass it) plus socket

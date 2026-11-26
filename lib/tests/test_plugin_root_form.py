@@ -43,16 +43,31 @@ lost again — which is why this file pins the exact literal.
 
 This file excludes itself — a guard that guarded itself could not name what it forbids.
 """
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 SELF = Path(__file__).resolve()
 
 TOKEN = "CLAUDE_PLUGIN_ROOT"
 FALLBACK_FORM = TOKEN + ":-"
+# Third clause: a `lib/*.md` block is loaded with Read, so the placeholder reaches the shell
+# empty, and the second clause names a dir only the author's install has. A marketplace install
+# keeps the plugin at `~/.claude/plugins/cache/<marketplace>/simo-dev/<version>/` (measured
+# 2026-11-16 in `installed_plugins.json`), so the last resort is the highest version found there.
+# `find`, not a glob: zsh's default `nomatch` turns an unmatched glob into an error. `-H` follows a
+# symlinked cache root; the `grep` anchors `simo-dev` as the PLUGIN segment, so neither a HOME nor
+# a marketplace named simo-dev can match another plugin. Highest is not necessarily the version
+# that rendered the calling SKILL.md (a project-scoped pin keeps several in the cache): a known skew.
 PRELUDE = (
-    'R="${' + TOKEN + '}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"'
+    'R="${' + TOKEN + '}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; '
+    '[ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 '
+    '-maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"'
 )
 
 FENCE = re.compile(r"^\s*```(\w*)")
@@ -190,3 +205,73 @@ def test_code_regions_bind_the_root_before_using_it():
         f"does not survive between Bash calls, and an unbound R makes the path absolute from /:\n  "
         + "\n  ".join(offenders)
     )
+
+
+# The prelude as a `lib/*.md` block actually delivers it: read with Read, so the placeholder is
+# unset in the shell. Each case builds a fake HOME (or config dir) and checks which root `R` lands
+# on and that a script under it is found. "public" is the export's only layout: no
+# local-marketplace dir at all. Paths are relative to tmp_path; HOME is `home` unless stated.
+_CACHE = "home/.claude/plugins/cache/simo-dev-marketplace/simo-dev"
+_SOURCE = "home/.claude/local-marketplace/simo-dev"
+_ROOT_CASES = {
+    "public": dict(dirs=[f"{_CACHE}/0.1.9"], expected=f"{_CACHE}/0.1.9"),
+    "public-two-versions": dict(dirs=[f"{_CACHE}/0.1.9", f"{_CACHE}/0.1.10"], expected=f"{_CACHE}/0.1.10"),
+    "author-source-wins": dict(dirs=[_SOURCE, f"{_CACHE}/0.1.10"], expected=_SOURCE),
+    "config-dir": dict(
+        dirs=["cfg/plugins/cache/mkt/simo-dev/0.1.4"], expected="cfg/plugins/cache/mkt/simo-dev/0.1.4",
+        env={"CLAUDE_CONFIG_DIR": "cfg"},
+    ),
+    "symlinked-cache": dict(
+        dirs=["real-cache/mkt/simo-dev/0.1.3"], expected="home/.claude/plugins/cache/mkt/simo-dev/0.1.3",
+        link=("home/.claude/plugins/cache", "real-cache"),
+    ),
+    "marketplace-named-simo-dev": dict(
+        dirs=["home/.claude/plugins/cache/simo-dev/other-plugin/9.9.9",
+              "home/.claude/plugins/cache/simo-dev/simo-dev/0.1.2"],
+        expected="home/.claude/plugins/cache/simo-dev/simo-dev/0.1.2",
+    ),
+    "home-path-contains-simo-dev": dict(
+        dirs=["simo-dev/home/.claude/plugins/cache/mkt/other-plugin/9.9.9"], expected=None,
+        home="simo-dev/home",
+    ),
+    "nothing-installed": dict(dirs=[], expected=None),
+}
+
+# The prelude as written in a lib/*.md line, matched by shape rather than by the PRELUDE constant,
+# so these tests run what ships even if the constant and the files ever disagree.
+_PRELUDE_SHAPE = re.compile(r'R="\$\{' + TOKEN + r'\}".*?\| tail -1\)"')
+
+
+def _lib_md_prelude():
+    for path in sorted((PLUGIN_ROOT / "skills").glob("*/lib/*.md")):
+        for _, line in _code_lines(path):
+            m = _PRELUDE_SHAPE.search(line)
+            if m:
+                return m.group(0)
+    pytest.fail("no lib/*.md code line carries a prelude")
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+@pytest.mark.parametrize("case", sorted(_ROOT_CASES))
+def test_lib_md_prelude_resolves_an_installed_root(tmp_path, shell, case):
+    if shutil.which(shell) is None:
+        pytest.skip(f"{shell} not installed")
+    spec = _ROOT_CASES[case]
+    for d in spec["dirs"]:
+        (tmp_path / d / "lib").mkdir(parents=True)
+        (tmp_path / d / "lib" / "probe.py").write_text("")
+    if "link" in spec:
+        link, target = spec["link"]
+        (tmp_path / link).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / link).symlink_to(tmp_path / target)
+    home = tmp_path / spec.get("home", "home")
+    home.mkdir(parents=True, exist_ok=True)
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+    env.update({k: str(tmp_path / v) for k, v in spec.get("env", {}).items()})
+    script = _lib_md_prelude() + '; printf "[%s]" "$R"; [ -z "$R" ] || [ -f "$R/lib/probe.py" ]'
+    run = subprocess.run([shell, "-c", script], env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    # Nothing to find leaves R empty: the caller then fails as it did before this clause —
+    # loudly where it reads the rc, silently where it absorbs it.
+    expected = "" if spec["expected"] is None else str(tmp_path / spec["expected"])
+    assert run.stdout == f"[{expected}]"

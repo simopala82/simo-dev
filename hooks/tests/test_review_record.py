@@ -33,12 +33,11 @@ def _mkrepo(path):
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "init"], check=True)
 
 
-def _repo_id(path):
-    common = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+def _tree_id(path):
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    return str(Path(common).parent.resolve())
 
 
 def _mk_transcript(tmp_path, *role_text_pairs, counter=[0]):
@@ -88,8 +87,8 @@ def test_marker_repo_is_recorded_not_payload_cwd(tmp_path):
     _fire(tmp_path, f"REPO: {marked_repo}\nReview the diff.", "simo-dev:code-reviewer",
           "sess-1", cwd_repo, state)
     recorded = _recorded(state)
-    assert recorded.startswith(_repo_id(marked_repo) + ":sess-1:")
-    assert _repo_id(cwd_repo) not in recorded
+    assert recorded.startswith(_tree_id(marked_repo) + ":sess-1:")
+    assert _tree_id(cwd_repo) not in recorded
 
 
 def test_absent_marker_records_nothing(tmp_path):
@@ -145,7 +144,7 @@ def test_bare_code_reviewer_agent_type_still_records(tmp_path):
     marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
     state = tmp_path / "state"
     _fire(tmp_path, f"REPO: {marked_repo}\nReview.", "code-reviewer", "sess-7", cwd_repo, state)
-    assert _recorded(state).startswith(_repo_id(marked_repo) + ":sess-7:")
+    assert _recorded(state).startswith(_tree_id(marked_repo) + ":sess-7:")
 
 
 def test_line_one_marker_wins_over_a_later_one(tmp_path):
@@ -155,8 +154,8 @@ def test_line_one_marker_wins_over_a_later_one(tmp_path):
     _fire(tmp_path, f"REPO: {marked_repo}\nReview the diff.\nREPO: {cwd_repo}",
           "simo-dev:code-reviewer", "sess-8", cwd_repo, state)
     recorded = _recorded(state)
-    assert recorded.startswith(_repo_id(marked_repo) + ":sess-8:")
-    assert _repo_id(cwd_repo) not in recorded
+    assert recorded.startswith(_tree_id(marked_repo) + ":sess-8:")
+    assert _tree_id(cwd_repo) not in recorded
 
 
 def test_marker_below_line_one_is_ignored_entirely(tmp_path):
@@ -196,8 +195,8 @@ def test_resume_cannot_repoint_an_existing_marker(tmp_path):
     )
     _fire_path(transcript, "simo-dev:code-reviewer", "sess-11", cwd_repo, state=state)
     recorded = _recorded(state)
-    assert recorded.startswith(_repo_id(marked_repo) + ":sess-11:")
-    assert _repo_id(cwd_repo) not in recorded
+    assert recorded.startswith(_tree_id(marked_repo) + ":sess-11:")
+    assert _tree_id(cwd_repo) not in recorded
 
 
 def test_missing_transcript_records_nothing(tmp_path):
@@ -245,7 +244,7 @@ def _handback_fire(tmp_path, session, prompt_for, **kw):
 
 def test_handback_conclusion_without_last_message_records(tmp_path):
     recorded, marked_repo = _handback_fire(tmp_path, "sess-14", lambda r: f"REPO: {r}\nReview.")
-    assert recorded.startswith(_repo_id(marked_repo) + ":sess-14:")
+    assert recorded.startswith(_tree_id(marked_repo) + ":sess-14:")
 
 
 def test_handback_with_blank_message_records_nothing(tmp_path):
@@ -295,7 +294,7 @@ def _result_entry(tool_use_id):
 def test_handback_followed_by_its_own_tool_result_records(tmp_path):
     recorded, marked_repo = _handback_fire(tmp_path, "sess-20", lambda r: f"REPO: {r}\nReview.",
                                            tail=(_result_entry("toolu_hb"),))
-    assert recorded.startswith(_repo_id(marked_repo) + ":sess-20:")
+    assert recorded.startswith(_tree_id(marked_repo) + ":sess-20:")
 
 
 def test_handback_followed_by_its_own_error_result_records_nothing(tmp_path):
@@ -366,7 +365,56 @@ def test_handback_sharing_message_id_with_thinking_only_records(tmp_path):
     ]
     f.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
     _fire_path(f, "simo-dev:code-reviewer", "sess-23", cwd_repo, last="", state=state)
-    assert _recorded(state).startswith(_repo_id(marked_repo) + ":sess-23:")
+    assert _recorded(state).startswith(_tree_id(marked_repo) + ":sess-23:")
+
+
+@pytest.mark.parametrize("sep", [0x85, 0x2028, 0x2029])
+def test_handback_report_with_a_raw_unicode_line_separator_records(tmp_path, sep):
+    """The CLI writes JSONL with JSON.stringify, which leaves NEL, U+2028 and U+2029 raw inside
+    strings; only "\\n" ends an entry. A report quoting one must still count as the conclusion."""
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    f = tmp_path / "raw-sep.jsonl"
+    lines = [
+        {"type": "user", "message": {"role": "user", "content": f"REPO: {marked_repo}\nReview."}},
+        {"type": "assistant", "message": {"id": "msg_Z", "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "..."}]}},
+        {"type": "assistant", "message": {"id": "msg_Z", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_hb", "name": "SubagentHandback",
+             "input": {"message": f"verdict: mergeable, quoting `{chr(sep)}`"}}]}},
+        _result_entry("toolu_hb"),
+    ]
+    f.write_text("\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n",
+                 encoding="utf-8")
+    assert chr(sep) in f.read_text(encoding="utf-8")
+    _fire_path(f, "simo-dev:code-reviewer", "sess-26", cwd_repo, last="", state=state)
+    assert _recorded(state).startswith(_tree_id(marked_repo) + ":sess-26:")
+
+
+def test_crlf_marker_records_the_stripped_path(tmp_path):
+    """agent_marker keeps a trailing CR in line 1; the hook strips its output, so a CRLF
+    dispatch still records the repo it names."""
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    _fire(tmp_path, f"REPO: {marked_repo}\r\nReview.", "simo-dev:code-reviewer", "sess-27", cwd_repo, state)
+    assert _recorded(state).startswith(_tree_id(marked_repo) + ":sess-27:")
+
+
+@pytest.mark.parametrize("sep", [0x85, 0x2028, 0x2029])
+def test_separator_inside_the_marker_path_records_nothing(tmp_path, sep):
+    """A raw separator inside line 1 no longer cuts the path short: the whole line names no
+    work tree, so nothing is recorded (before the fix, the prefix was recorded)."""
+    cwd_repo = tmp_path / "cwd-repo"; _mkrepo(cwd_repo)
+    marked_repo = tmp_path / "marked-repo"; _mkrepo(marked_repo)
+    state = tmp_path / "state"
+    f = tmp_path / f"mid-sep-{sep}.jsonl"
+    entry = {"type": "user", "message": {"role": "user",
+                                         "content": f"REPO: {marked_repo}{chr(sep)}{cwd_repo}\nReview."}}
+    f.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    _fire_path(f, "simo-dev:code-reviewer", "sess-28", cwd_repo, state=state)
+    assert _recorded(state) == ""
 
 
 def _wait_for_record(state, timeout):
@@ -397,7 +445,7 @@ def test_default_path_text_conclusion_records(tmp_path):
     payload = _stop_payload(transcript, "sess-29", cwd_repo, last="verdict: mergeable")
     subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
                    text=True, env=_env(state), check=True, capture_output=True)
-    assert _wait_for_record(state, 10).startswith(_repo_id(marked_repo) + ":sess-29:")
+    assert _wait_for_record(state, 10).startswith(_tree_id(marked_repo) + ":sess-29:")
 
 
 def test_default_path_records_through_the_detached_worker(tmp_path):
@@ -408,7 +456,7 @@ def test_default_path_records_through_the_detached_worker(tmp_path):
     transcript = _mk_handback_transcript(tmp_path, f"REPO: {marked_repo}\nReview.")
     subprocess.run([sys.executable, str(HOOK)], input=json.dumps(_stop_payload(transcript, "sess-26", cwd_repo)),
                    text=True, env=_env(state), check=True, capture_output=True)
-    assert _wait_for_record(state, 10).startswith(_repo_id(marked_repo) + ":sess-26:")
+    assert _wait_for_record(state, 10).startswith(_tree_id(marked_repo) + ":sess-26:")
 
 
 def test_default_path_interrupted_reviewer_records_nothing(tmp_path):
@@ -458,7 +506,7 @@ def test_record_survives_the_hook_being_killed_mid_run(tmp_path):
         os.killpg(proc.pid, signal.SIGKILL)
     proc.communicate()
     assert streams_closed_in_time
-    assert _wait_for_record(state, 15).startswith(_repo_id(marked_repo) + ":sess-27:")
+    assert _wait_for_record(state, 15).startswith(_tree_id(marked_repo) + ":sess-27:")
 
 
 def _fire_with_plugin_setting(tmp_path, session, enabled):
@@ -485,7 +533,7 @@ def test_disabled_plugin_records_nothing_on_the_default_path(tmp_path):
 def test_enabled_plugin_records_on_the_default_path(tmp_path):
     """Reads an explicit `true`, not the missing-file default: an inverted check fails here."""
     state, marked_repo = _fire_with_plugin_setting(tmp_path, "sess-31", True)
-    assert _wait_for_record(state, 10).startswith(_repo_id(marked_repo) + ":sess-31:")
+    assert _wait_for_record(state, 10).startswith(_tree_id(marked_repo) + ":sess-31:")
 
 
 @pytest.mark.parametrize("stdin", [b"", b"not json", b"[]", b"\xff"])
@@ -516,7 +564,7 @@ def test_handback_flushed_after_the_hook_starts_still_records(tmp_path):
     time.sleep(0.3)
     with transcript.open("a") as f:
         f.write(handback + "\n")
-    assert _wait_for_record(state, 10).startswith(_repo_id(marked_repo) + ":sess-32:")
+    assert _wait_for_record(state, 10).startswith(_tree_id(marked_repo) + ":sess-32:")
 
 
 def _load_hook_module():

@@ -17,7 +17,7 @@ found, more than one match, field missing/unrecognized) -- never "1" unless
 exactly one plan matches and it declares the field explicitly. This mirrors
 the existing docs/plans/*.md scanning in check_base_freshness.py and
 check_plan_drift.py (same lib/ dir), extracted here into a tested script
-rather than embedded inline in mr-followup/SKILL.md's bash block.
+rather than embedded inline in mr-followup's step 8 bash block (lib/post-merge.md).
 
 Usage:
     check_deploy_required.py --repo PATH <TICKET-KEY>
@@ -26,7 +26,7 @@ Exits 0 on every normal invocation -- the answer is the stdout content ("0"
 or "1"), not the exit code, since there is no error case distinct from "no
 deploy required" here. A missing/malformed argument (e.g. no --repo) still
 exits 2 before any output, same as any argparse script; not defended
-against, since the sole caller (mr-followup/SKILL.md) always supplies both.
+against, since the sole caller (mr-followup lib/post-merge.md) always supplies both.
 """
 from __future__ import annotations
 

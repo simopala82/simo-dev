@@ -3,9 +3,18 @@
 # requires-python = ">=3.10"
 # ///
 """PostToolUse hook on Skill. Appends every skill invocation to the dev-flow
-skill log so the evaluation journal (simo-dev:mr-followup step 8.5) can record
-which skills actually fired during a task — including auto-fires the agent
-wouldn't recall.
+skill log, the hook-liveness probe lib/review_marker.py reads (no journal reads
+it any more). It also appends a `step_start` flow event (lib/flow_telemetry.py):
+to the active task's file, or, outside a task, to `session-<id>.jsonl` for
+`simo-dev:*` skills only — before the git check, so a task's step is kept even
+when the session cwd is not a repo. A session that never had a task and runs a work
+step of the flow (flow_telemetry.ADOPT_SKILLS, e.g. `simo-dev:commit` in a session
+another one started) gets an adopted, telemetry-only task instead: flow_telemetry.adopt
+reads the `task id:` / `parent task:` lines of the payload's `transcript_path`; if it
+fails, the step goes to the session file as before. Known limit: a session with no task of its own
+falls back to the cwd's worktree marker, so in a tree another session still holds
+(task-intake's Shared-tree stop) a skill fired before its own `start` lands in that
+session's task file.
 
 Log:  ~/.claude/state/dev-flow-skills.log
 Line: <iso8601-utc>\t<session-id>\t<repo>\t<branch>\t<skill>
@@ -59,6 +68,30 @@ def _repo_and_branch(cwd: str) -> tuple[str, str]:
     return repo, branch
 
 
+def _emit_event(skill: str, session: str, cwd: str, transcript: str = "") -> None:
+    """Flow event next to the TSV line; fail-open like the rest of this hook."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import flow_telemetry
+
+        task = flow_telemetry.current_task(session, cwd)
+        if not task and not skill.startswith("simo-dev:"):
+            return
+        if not task and session:
+            try:
+                if flow_telemetry.adopt(session, skill, transcript):
+                    return
+            except Exception:  # noqa: BLE001 - a failed adoption still keeps the step, in the session file
+                pass
+        if task:
+            flow_telemetry.record("step_start", session, cwd, {"skill": skill}, task=task)
+        elif session:
+            flow_telemetry.append_event(flow_telemetry.session_file(session),
+                                        flow_telemetry.build_event("step_start", "", session, {"skill": skill}))
+    except Exception:  # noqa: BLE001 - a telemetry failure must never fail the hook
+        pass
+
+
 def main() -> int:
     if not _plugin_enabled():
         return 0
@@ -68,11 +101,14 @@ def main() -> int:
         skill = (payload.get("tool_input") or {}).get("skill") or ""
         session = payload.get("session_id") or ""
         cwd = payload.get("cwd") or ""
+        transcript = payload.get("transcript_path") or ""
     except (json.JSONDecodeError, AttributeError, TypeError):
         return 0
 
     if not skill:
         return 0
+
+    _emit_event(skill, session, cwd, transcript)
 
     repo, branch = _repo_and_branch(cwd)
     if not repo:

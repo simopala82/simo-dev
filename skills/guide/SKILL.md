@@ -9,9 +9,9 @@ Full details: `~/.claude/local-marketplace/simo-dev/docs/canonical-flow.md` (rea
 
 ## Canonical flow
 
-`simo-dev:task-intake` → `simo-dev:plan-execute` → `simo-dev:review-loop` → `simo-dev:commit` → `simo-dev:mr-followup`. Interview entry: `simo-dev:grill-me`.
+`simo-dev:task-intake` → `simo-dev:plan-execute` → `simo-dev:review-loop` → `simo-dev:commit` → `simo-dev:mr-followup`. Interview step: `simo-dev:grill-me`.
 
-Entry into the flow is mandatory, and the exemptions are listed with it: CLAUDE.md "Mandatory entry" (always-on, unlike this file).
+The flow is opt-in: only `simo-dev:task-intake` starts it (CLAUDE.md "Explicit entry"). On work already in progress outside the flow (changes, local commits, a plan, an open MR/PR) it proposes re-entering at `review-loop`, `plan-execute` or `mr-followup`, behind one confirmation (`--adopt` skips it; `skills/task-intake/lib/resume-path.md`). The flag lives in `lib/flow_state.py`: a session flag plus a worktree marker. A standalone `simo-dev:grill-me` does not switch the flow on.
 
 ## Domain glossary
 
@@ -20,7 +20,7 @@ At task start, read `CONTEXT.md` if present (use its terms). Update when a term 
 ## Worktrees
 
 - Worktree policy, path convention and the never-a-second-worktree invariant: CLAUDE.md "Worktrees" (always-on; this file is not). `<name>` = branch minus the `<type>/` prefix — `feat/proj-1234-topn` → `.worktrees/proj-1234-topn`.
-- Decision table, ordered commands and the adopt/relocate procedure: `simo-dev:task-intake` step 6 (+ its `skills/task-intake/lib/worktree-carry.md`). Mechanism behind the `git -C` discipline: CLAUDE.md "Worktree cwd gotcha".
+- Decision table, ordered commands and the adopt/relocate procedure: `simo-dev:task-intake` step 6, decided by `lib/worktree_resolve.py` (+ its `skills/task-intake/lib/worktree-carry.md`). Mechanism behind the `git -C` discipline: CLAUDE.md "Worktree cwd gotcha".
 
 ## Ticket marker
 
@@ -45,18 +45,20 @@ Personal repos with no linked tracker project drop a `.claude/no-tracker` marker
 
 Worktree cleanup after merge is handled by `simo-dev:mr-followup` step 8, automatically — the one pre-approved exception to "destructive ops need approval" (runs ONLY after a user-approved merge). Never switch/checkout the main checkout to do it — removal works from any branch, and another session may be working there.
 
-Once cleanup, the journal and step 8.6 are done, step 8.7 invokes the repo's configured `release_skill` with args `post-merge`; an unconfigured repo is a silent no-op. Configure it in `~/.claude/simo-dev/repo.json` via `lib/repo_config.py`, keyed by repo-id — `docs/canonical-flow.md` "Configuring per-repo settings".
+The journal step records the task's outcome and regenerates the journal from its flow events (`lib/flow_telemetry.py`). Once cleanup, the journal and step 8.6 are done, step 8.7 invokes the repo's configured `release_skill` with args `post-merge`; an unconfigured repo is a silent no-op. Configure it in `~/.claude/simo-dev/repo.json` via `lib/repo_config.py`, keyed by repo-id — `docs/canonical-flow.md` "Configuring per-repo settings".
 
 ## MR assignee
 
-Always assign GitLab MRs to the current user: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; glab api user | python3 "$R/lib/json_field.py" - username`, pass `--assignee <username>`. Never hardcode.
+Always assign GitLab MRs to the current user: `R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"; glab api user | python3 "$R/lib/json_field.py" - username`, pass `--assignee <username>`. Never hardcode.
 
 ## Proactive review-loop auto-run (eager copy: CLAUDE.md — this file is not loaded by itself)
+
+Only while the flow is active (either key of `lib/flow_state.py`). Outside it the hook below prints only the one-line `simo-dev advisory: no review recorded` on a feature-branch commit or push, and nothing here fires.
 
 When a trigger fires and review-loop hasn't run since the last batch of edits, **auto-invoke `simo-dev:review-loop` and proceed** — never ask first. Triggers:
 - **Linguistic** — "done" / "ok" / "proceed" / "merge" / "push" / "ship it" / "let's commit".
 - **Implementation** — tests passing, feature complete, batch of edits done.
-- **Structural** — BEFORE `git commit`, `git push`, `git merge`, `glab mr merge`, `gh pr merge`, or `simo-dev:commit`. A PreToolUse hook on `Bash` self-gates to `git commit` (any form, including `git -C <worktree> commit` and chained `add && commit`) and injects a reminder pointing here.
+- **Structural** — BEFORE `git commit`, `git push`, `git merge`, `glab mr merge`, `glab api …/merge`, `gh pr merge`, or `simo-dev:commit`. A PreToolUse hook on `Bash` self-gates to `git commit` (any form, including `git -C <worktree> commit` and chained `add && commit`) and injects a reminder pointing here.
 
 Inside a `simo-dev:mr-followup` run nothing the run does is a trigger: its edits, test runs, commits, pushes, and the user's answers to its own questions. Any other review-loop waits as canonical-flow "In-scope improvements" (Transparency) and `simo-dev:mr-followup` "No Also-fixed ledger work inside a run" describe.
 

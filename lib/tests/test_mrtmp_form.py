@@ -3,7 +3,7 @@
 Shell state does not survive between Bash calls, so a fenced block executed on its own
 sees MRTMP unset and every `"$MRTMP/<file>"` resolves from `/`. The consequence is silent
 rather than loud: `mr_presentation.py --normalize-presentation "/mr_pres.json"` exits
-non-zero and `skills/commit/SKILL.md` step 7 routes that non-zero into its minimal
+non-zero and `lib/mr_create.py body` (commit step 7) routes that non-zero into its minimal
 fallback body, so the MR is created with a degraded description; `json_field.py
 "$MRTMP/mr_pres.json" title` on the same missing file yields an empty MR title.
 
@@ -67,27 +67,21 @@ those lines are commands a Bash call actually runs and that bind nothing at the 
 `skills/mr-review/SKILL.md`'s
 three `> "$MRTMP/review_meta.json"` producer bullets, its `[ -s "$MRTMP/review_jira_full.txt" ]`
 test, and the two `MERMAID=$(python3 .../json_field.py "$MRTMP/..." mermaid)` preview lines in
-that file and in `skills/commit/SKILL.md`. Those sites rely on their file's convention sentence instead, and this
+that file and in `skills/commit/SKILL.md` (census dated 2026-08-22; commit's preview line now takes the
+`mrtmp:` literal, 2026-11-25). Those sites rely on their file's convention sentence instead, and this
 guard cannot see them. Assertion 3 inherits that blind spot across flows, not only within a
 file: it compares per file, so a file holding exactly ONE binding is compared to nothing and a
 lone divergent-but-prefixed key passes assertions 1-3 (constructed and confirmed 2026-08-22 by adding
 such a fence to `skills/mr-followup/lib/pipeline-scripts.md`; assertion 4, added later, catches
 one whose `<repo>` segment is not the common-dir form). That file is the live instance —
-it has no binding in a shell fence at all, and its agreement with `skills/commit/SKILL.md` rests
+it has no binding in a shell fence at all, and its agreement with `lib/mr_create.py`'s Python derivation (pinned by `test_mr_create.py`) rests
 on a THIRD spelling, written in prose, that keys on the substituted `<worktree-abs>` and
 `printf '%s' "<branch>"` literals instead of reading the cwd. Grouping the files by intended form
 was the alternative and was rejected: it classifies rather than forbids, and the map ages.
 
-The `MR_TITLE` / `MR_BODY` / `TARGET_BRANCH` trio that `skills/commit/SKILL.md` step 9 used to
-read from a different fence than the one binding them — the same defect class in different
-variables — was closed the same way: `MR_BODY` now binds `MRTMP` and writes
-`$MRTMP/mr_body.md` via a direct redirect inside the same fence it's produced in, exactly like
-every other `$MRTMP`-using block in the file, so `test_shell_blocks_bind_mrtmp_before_using_it`
-covers it like any other binding with no special-casing added here. `MR_TITLE` and
-`TARGET_BRANCH` no longer cross a fence boundary at all: both are derived inline via
-`python3 .../lib/json_field.py` in the very fence that consumes them (step 9's GitLab and
-GitHub create blocks), so there is no cross-fence binding of that kind left for this guard to
-model.
+Commit steps 7 and 9 bind no `MRTMP` in a fence any more: `lib/mr_create.py` derives it in Python
+(outside this guard's `.md`/`.sh` scope) and `test_mr_create.py` pins its byte-compatibility with the
+shell form.
 
 """
 import re
@@ -192,9 +186,9 @@ def test_mrtmp_bindings_are_uniform_within_a_file():
 
     A block keyed differently from the block that wrote the file gets a different directory, so
     `/tmp/claude_mr_$(basename "$PWD")_…` passes the prefix assertion and still loses the file.
-    Uniformity per file is the forbid-style form of that: the two files legitimately use different
-    forms — `skills/commit/SKILL.md` keys on the task worktree `$W`, `skills/mr-review/SKILL.md` on
-    the ambient cwd's common git dir — so the comparison cannot be tree-wide. Compared stripped, so
+    Uniformity per file is the forbid-style form of that: files may legitimately use different
+    forms (`skills/mr-review/SKILL.md` is the file with fence bindings today; commit's form moved into
+    `lib/mr_create.py`, keyed on the task worktree), so the comparison cannot be tree-wide. Compared stripped, so
     an indented copy of the same binding is not an offender.
     """
     offenders = []

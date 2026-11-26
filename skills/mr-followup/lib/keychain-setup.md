@@ -34,7 +34,7 @@ The helper calls `security` as a Python subprocess, not from bash. Trusting bash
 ## Verify
 
 ```bash
-R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"
+R="${CLAUDE_PLUGIN_ROOT}"; [ -d "$R" ] || R="$HOME/.claude/local-marketplace/simo-dev"; [ -d "$R" ] || R="$(find -H "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache" -mindepth 3 -maxdepth 3 -type d 2>/dev/null | grep "/simo-dev/[^/]*$" | sort -V | tail -1)"
 RES=$(python3 "$R/skills/mr-followup/lib/fetch_discussions.py" myorg/geo/backend <some-mr-iid> gitlab.example.com); echo "rc=$? ${RES:0:200}"
 ```
 

@@ -16,7 +16,7 @@ HOOK = Path(__file__).resolve().parent.parent / "review_loop_warn.py"
 REVIEW_MARKER = Path(__file__).resolve().parent.parent.parent / "lib" / "review_marker.py"
 
 
-def _mkrepo(tmp_path):
+def _mkrepo(tmp_path, branch="feat/x"):
     r = tmp_path / "repo"
     r.mkdir()
     subprocess.run(["git", "-C", str(r), "init", "-q"], check=True)
@@ -25,6 +25,7 @@ def _mkrepo(tmp_path):
     (r / "a.txt").write_text("base\n")
     subprocess.run(["git", "-C", str(r), "add", "a.txt"], check=True)
     subprocess.run(["git", "-C", str(r), "commit", "-qm", "base"], check=True)
+    subprocess.run(["git", "-C", str(r), "switch", "-q", "-C", branch], check=True)
     (r / "a.txt").write_text("changed\n")   # left UNSTAGED -- PreToolUse sees an empty index
     return r
 
@@ -36,8 +37,15 @@ def _record(repo, state, session="sess-x"):
     )
 
 
-def _warns(cmd, cwd, state, session="sess-x", extra_env=None):
-    env = {"REVIEW_MARKER_STATE_FILE": str(state)}
+def _warns(cmd, cwd, state, session="sess-x", extra_env=None, active=True):
+    env = {"REVIEW_MARKER_STATE_FILE": str(state),
+           "SIMO_DEV_FLOW_ACTIVE_DIR": str(state.parent / "active"),
+           "SIMO_DEV_ADVISORY_STATE_FILE": str(state.parent / "advisory-seen")}
+    if active and session is not None:
+        (state.parent / "active").mkdir(parents=True, exist_ok=True)
+        (state.parent / "active" / session).write_text("1\n")
+    elif active:
+        (Path(cwd) / ".git" / "simo-dev-flow-active").write_text("1\n")
     if extra_env:
         env.update(extra_env)
     payload = {"cwd": str(cwd), "tool_input": {"command": cmd}}
@@ -371,3 +379,140 @@ def test_reminder_names_mr_followup_exception(tmp_path):
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "simo-dev:mr-followup" in ctx
     assert "own commits" in ctx
+
+
+def _remote(repo, tmp_path):
+    """Bare origin with origin/HEAD -> origin/master holding the base commit."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "HEAD~0:refs/heads/master"], check=True)
+    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "set-head", "origin", "master"], check=True)
+
+
+def _commit_change(repo):
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "change"], check=True)
+
+
+def _backdate(*paths):
+    for p in paths:
+        subprocess.run(["touch", "-t", "200001010000", str(p)], check=True)
+
+
+def test_commit_outside_flow_gives_one_line_advisory(tmp_path):
+    repo = _mkrepo(tmp_path)
+    out = _warns("git commit -m x", repo, tmp_path / "state", active=False)
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith("simo-dev advisory: no review recorded")
+    assert "\n" not in ctx and "REMINDER" not in ctx
+
+
+def test_commit_outside_flow_advises_once_per_branch(tmp_path):
+    repo = _mkrepo(tmp_path)
+    assert "additionalContext" in _warns("git commit -m x", repo, tmp_path / "state", active=False)
+    assert "additionalContext" not in _warns("git commit -m y", repo, tmp_path / "state", active=False)
+
+
+def test_commit_outside_flow_on_protected_branch_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path, branch="main")
+    assert "additionalContext" not in _warns("git commit -m x", repo, tmp_path / "state", active=False)
+
+
+def test_commit_outside_flow_reviewed_files_are_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _record(repo, tmp_path / "state")
+    _backdate(repo / "a.txt")
+    assert "additionalContext" not in _warns("git commit -m x", repo, tmp_path / "state", active=False)
+
+
+def test_commit_outside_flow_detached_head_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "--detach"], check=True)
+    assert "additionalContext" not in _warns("git commit -m x", repo, tmp_path / "state", active=False)
+
+
+def test_push_outside_flow_advises_on_unreviewed_branch_files(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _remote(repo, tmp_path)
+    _commit_change(repo)
+    out = _warns("git push -u origin feat/x", repo, tmp_path / "state", active=False)
+    assert "simo-dev advisory: no review recorded" in out
+
+
+def test_push_outside_flow_reviewed_branch_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _remote(repo, tmp_path)
+    _commit_change(repo)
+    _record(repo, tmp_path / "state")
+    _backdate(repo / "a.txt")
+    assert "additionalContext" not in _warns("git push", repo, tmp_path / "state", active=False)
+
+
+def test_push_outside_flow_reviewed_branch_with_deletion_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    (repo / "gone.txt").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "gone.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add gone"], check=True)
+    _remote(repo, tmp_path)
+    subprocess.run(["git", "-C", str(repo), "rm", "-q", "gone.txt"], check=True)
+    _commit_change(repo)
+    _record(repo, tmp_path / "state")
+    _backdate(repo / "a.txt")
+    assert "additionalContext" not in _warns("git push", repo, tmp_path / "state", active=False)
+
+
+def test_push_outside_flow_without_origin_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _commit_change(repo)
+    assert "additionalContext" not in _warns("git push", repo, tmp_path / "state", active=False)
+
+
+def test_push_in_flow_is_silent(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _remote(repo, tmp_path)
+    _commit_change(repo)
+    (repo / "a.txt").write_text("dirty again\n")   # a commit here WOULD get the REMINDER
+    assert "additionalContext" not in _warns("git push", repo, tmp_path / "state")
+
+
+def test_session_cwd_marker_counts_as_in_flow_for_another_repo(tmp_path):
+    repo = _mkrepo(tmp_path)
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    subprocess.run(["git", "-C", str(session_dir), "init", "-q"], check=True)
+    (session_dir / ".git" / "simo-dev-flow-active").write_text("1\n")
+    out = _warns(f"git -C {repo} commit -m x", session_dir, tmp_path / "state", session="other", active=False)
+    assert "REMINDER: no code review covers this commit" in out
+
+
+def test_commit_and_push_advisories_are_deduped_separately(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _remote(repo, tmp_path)
+    assert "additionalContext" in _warns("git commit -am x", repo, tmp_path / "state", active=False)
+    _commit_change(repo)
+    assert "additionalContext" in _warns("git push", repo, tmp_path / "state", active=False)
+
+
+def test_worktree_marker_counts_as_in_flow(tmp_path):
+    repo = _mkrepo(tmp_path)
+    (repo / ".git" / "simo-dev-flow-active").write_text("1\n")
+    out = _warns("git commit -m x", repo, tmp_path / "state", session="other", active=False)
+    assert "REMINDER: no code review covers this commit" in out
+
+
+def test_advisory_seen_drops_entries_older_than_7_days(tmp_path):
+    repo = _mkrepo(tmp_path)
+    seen = tmp_path / "advisory-seen"
+    old = int(time.time()) - 8 * 24 * 3600
+    seen.write_text(f"{old}\tsess-x\t{repo.resolve()}\tfeat/x\tcommit\n")
+    assert "additionalContext" in _warns("git commit -m x", repo, tmp_path / "state", active=False)
+    assert str(old) not in seen.read_text()
+
+
+def test_push_inside_heredoc_is_not_matched(tmp_path):
+    repo = _mkrepo(tmp_path)
+    _remote(repo, tmp_path)
+    _commit_change(repo)
+    cmd = "cat <<'EOF' > n.txt\ngit push\nEOF"
+    assert "additionalContext" not in _warns(cmd, repo, tmp_path / "state", active=False)

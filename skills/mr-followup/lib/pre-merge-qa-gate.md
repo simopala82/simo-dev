@@ -41,4 +41,4 @@ Not always-on — would slow down trivial merges. Decision table:
 
 ## 4. Interop with step 8
 
-A passing run of this gate does NOT skip step 8's verification-notes comment — the release-time transitions (`Ready for Deploy` / `Done`) still need it. Instead, add the `Pre-merge QA gate: passed <date>` line to the comment so the release-time verify agent can lighten its behavior check.
+A passing run of this gate does NOT make the verification-notes comment unnecessary — the release-time transitions (`Ready for Deploy` / `Done`) still need it. Instead, it makes step 8 post a superseding comment carrying the `Pre-merge QA gate: passed <date>` line, so the release-time verify agent can lighten its behavior check (`skills/commit/lib/verification-notes.md`, **Supersede check** with `--qa-gate`).
