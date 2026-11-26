@@ -12,7 +12,7 @@ sl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sl)
 
 LEGACY = "upbeat-nightingale-581454\tclaude/upbeat-nightingale-581454\tsimo-dev:task-intake\n"
-OTHER_SESSION = "2026-07-28T08:00:00Z\tsess-other\tprompter\tdevelop\tsimo-dev:commit\n"
+OTHER_SESSION = "2026-07-28T08:00:00Z\tsess-other\tservice-a\tdevelop\tsimo-dev:commit\n"
 MINE_A = "2026-07-28T08:22:52Z\tsess-mine\tmyrepo\tclaude/frosty-wilson\tsimo-dev:task-intake\n"
 MINE_B = "2026-07-28T08:26:08Z\tsess-mine\tmyrepo\tclaude/frosty-wilson\tsimo-dev:plan-write\n"
 MINE_DUP = "2026-07-28T09:00:00Z\tsess-mine\tmyrepo\tclaude/frosty-wilson\tsimo-dev:task-intake\n"
@@ -55,7 +55,7 @@ def test_repo_and_branch_match_without_session():
 
 
 def test_repo_alone_does_not_match():
-    assert not sl.belongs(OTHER_SESSION, "sess-mine", "prompter", "")
+    assert not sl.belongs(OTHER_SESSION, "sess-mine", "service-a", "")
 
 
 def test_branch_alone_does_not_match():

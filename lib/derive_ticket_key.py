@@ -25,7 +25,7 @@ Three guards, matching the three cases:
    symlink into the myrepo repo, i.e. `$HOME/.claude/no-tracker` IS
    `myrepo/.claude/no-tracker`. Without the boundary, an unbounded walk-up
    from any repo under `$HOME` reaches `cur=$HOME`, finds that marker, and
-   wrongly opts every tracker-linked repo (prompter, content-hub, …) out of key
+   wrongly opts every tracker-linked repo (service-a, service-b, …) out of key
    derivation.
 
 2. ticket-key override. A `.claude/ticket-key-override` file (first non-blank
