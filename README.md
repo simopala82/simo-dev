@@ -145,80 +145,45 @@ apply changes, Claude Code runs a materialized cache copy.
 
 ### Canonical chain
 
-The straight-line path from a task to a merged, verified change, grouped into its four canonical-chain phases. The side-branches panel is deliberately drawn with no edges into the chain — their exact attachment points are prose, not arrows (see the sections below the diagram):
+The straight-line path from a task to a merged, verified change, in its four phases. Only the main path is drawn: gate loop-backs (redirect, edit, restart), tracker transitions, the knowledge harvest and the side-branch skills are described in the sections below.
 
 ```mermaid
 flowchart TD
-    subgraph INTAKE["Intake & planning"]
-        Start(["Task: ticket key or free-text prompt"]) --> TI["task-intake"]
-        TI -.-> J1[["Tracker -> In Progress"]]
-        TI -. "deep-dive: 2-4 discrete decisions" .-> GM["grill-me (decisions mode)"]
-        TI -. "deep-dive: open scope" .-> BS["grill-me (design mode)"]
-        GM -.-> TI
-        BS -.-> TI
-        TI --> DG{"Direction gate\na-c directions / deep-dive / redirect\n(y = Recommended)"}
-        DG -->|y| PLAN["plan-writer subagent\n(plan-write rules)"]
-        DG -->|redirect| TI
-        PLAN --> PG{"Plan review gate\nproceed / apply options / edit / restart\n(y = Recommended)"}
-        PG -->|edit / apply and re-present| PLAN
-        PG -->|restart| DG
+    Start(["Ticket or free-text prompt"]) --> TI
+
+    subgraph INTAKE["1. Intake & planning"]
+        TI["task-intake"] --> DG{"Direction gate"}
+        DG -. "deep-dive" .-> GM["grill-me"]
+        GM -.-> DG
+        DG --> PLAN["plan-writer"]
+        PLAN --> PG{"Plan gate"}
     end
 
-    subgraph IMPL["Implementation & review"]
-        EXEC["plan-execute\n(TDD by default)"]
-        RL["review-loop"]
-        RLX{"Review-loop exit\nclean / skip / iterate\n(cap: 5, or lower if passed —\nsee note below)"}
-        EXEC --> RL
-        RL --> RLX
-        RLX -->|iterate| RL
+    subgraph IMPL["2. Implementation & review"]
+        EXEC["plan-execute"] --> RL["review-loop"]
+        RL --> RLX{"Clean?"}
+        RLX -->|no: fix| RL
     end
-    PG -->|y| EXEC
 
-    subgraph PUBLISH["Publish (no gate)"]
-        HARVEST["Knowledge harvest\n(domain terms / ADR /\ngotchas — ask before\ncreating a missing home)"]
-        CM["commit"]
-        MRCREATE["MR/PR created\n(unconditional; diagram\npreview shown, informational)"]
-        J2[["Tracker -> CodeReview"]]
-        CM --> MRCREATE
-        MRCREATE -.-> J2
+    subgraph PUBLISH["3. Publish"]
+        CM["commit<br/>harvest, commit, push, MR/PR"]
     end
-    RLX -->|clean or skip| HARVEST
-    HARVEST -->|wrote files: step-1 review,\nthen commit, no 2nd harvest| RL
-    HARVEST -->|nothing written / covered| CM
 
-    subgraph FOLLOWUP["Follow-up & merge"]
-        MF["mr-followup\n(auto-fixes + auto-commits,\nno gate, cap: 5, or lower if passed)"]
-        HARVEST2["Harvest catch-up\n(only what's new\nsince commit)"]
-        PARK(["Parked: ready for merge"])
-        MERGE{{"Merge\n(GitLab merge API /\ngh pr merge)"}}
-        J3[["Tracker -> Testing /\nReady for Testing"]]
-        VNOTES["Verification notes\n(posted at MR open;\nhere only if missing\nor changed / QA gate)"]
-        CLEANUP["Worktree cleanup\n(auto, pre-approved exception)"]
-        JOURNAL["Regenerate dev-flow journal\nfrom flow events\n(steps, gates, tokens)"]
-        MF --> HARVEST2
-        HARVEST2 -->|wrote files: fix round| MF
-        HARVEST2 -->|nothing new| PARK
-        PARK --> MERGE
-        MERGE -.-> J3
-        MERGE --> VNOTES
-        VNOTES --> CLEANUP
-        CLEANUP --> JOURNAL
+    subgraph FOLLOWUP["4. Follow-up & merge"]
+        MF["mr-followup<br/>CI + review comments, auto-fix"] --> MERGE{{"Merge"}}
+        MERGE --> POST["Post-merge<br/>tracker, cleanup, journal"]
     end
-    MRCREATE --> MF
 
-    subgraph SIDE["Side-branches (no chain edges — see prose)"]
-        ST["spawn-task\n(used by task-intake hand-off)"]
-        MRV["mr-review\n(standalone, read-only,\nreviews OTHER people's MRs)"]
-    end
+    PG --> EXEC
+    RLX -->|yes| CM
+    CM --> MF
 
     classDef hardGate fill:#7f1d1d,stroke:#f87171,stroke-width:3px,color:#fff
     classDef softGate fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fff,stroke-dasharray: 4 2
     classDef side fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#fff,stroke-dasharray: 3 3
-    classDef tracker fill:#134e4a,stroke:#2dd4bf,stroke-width:2px,color:#fff
     class MERGE hardGate
     class DG,PG,RLX softGate
-    class GM,BS,ST,MRV side
-    class J1,J2,J3 tracker
+    class GM side
 ```
 
 ### Gates: hard vs. soft
@@ -240,9 +205,8 @@ Every other checkpoint (direction, plan review, review-loop exit; a decided brie
 - **Red, solid heavy border** — hard gate: always asks, never auto-answered.
 - **Amber, dashed border** — soft gate: asks interactively, each with a documented default answer.
 - **Blue, dashed border** — side-branch skill, not on the canonical chain.
-- **Teal, subroutine (double-bar) shape** — issue-tracker ticket transition: a side-effect of the step it branches from, not a flow step itself.
 
-Two flow details not drawn in the diagram: in prompt mode (no ticket key), `task-intake` asks whether to create a ticket mid-flow (default: no); and `grill-me` captures crystallized domain terms into `CONTEXT.md` / `docs/adr/` inline, as it goes. The diagram's `HARVEST` node in `commit` now runs the full three-question harvest (domain terms, ADRs, gotchas — not just domain terms), before commit's review pre-flight, so anything it writes goes back through `review-loop`; `HARVEST2` writes go back through an `mr-followup` review round the same way — it shares one ask-before-create-if-missing gate with `grill-me`'s inline capture on first use per repo (`skills/commit/lib/knowledge-harvest.md`).
+Flow details not drawn in the diagram: `task-intake` moves the ticket to In Progress, MR creation moves it to CodeReview, and the merge to Testing / Ready for Testing. A gate can also send the flow back: the direction gate's redirect returns to `task-intake`, the plan gate's edit returns to `plan-writer` and its restart to the direction gate. In prompt mode (no ticket key), `task-intake` asks whether to create a ticket mid-flow (default: no); and `grill-me` captures crystallized domain terms into `CONTEXT.md` / `docs/adr/` inline, as it goes. The knowledge harvest inside `commit` runs the full three-question harvest (domain terms, ADRs, gotchas — not just domain terms), before commit's review pre-flight, so anything it writes goes back through `review-loop`; the harvest catch-up in `mr-followup` (only what is new since the commit) sends its writes back through an `mr-followup` review round the same way — it shares one ask-before-create-if-missing gate with `grill-me`'s inline capture on first use per repo (`skills/commit/lib/knowledge-harvest.md`).
 
 ### Side-branches
 
